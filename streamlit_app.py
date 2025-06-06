@@ -79,13 +79,6 @@ if not project_df.empty:
         ''
 
         # Filter the data
-        # Note: When comparing with `from_date` and `to_date` from the slider,
-        # which are `datetime.date` objects, ensure the DataFrame's 'Date' column
-        # is also comparable. `pd.to_datetime` usually includes time, so ensure
-        # the comparison is appropriate (e.g., convert DataFrame's 'Date' to date part).
-        # Or, better, ensure the filter handles Timestamp vs date correctly.
-        # For direct comparison with `datetime.date` objects, we can use `.dt.date`
-        # on the DataFrame column.
         filtered_project_df = project_df[
             (project_df['Project Name'].isin(selected_projects))
             & (project_df['Date'].dt.date >= from_date) # Convert to date part for comparison
@@ -157,3 +150,19 @@ if not project_df.empty:
 
 else:
     st.info("Please upload a CSV file to get started.")
+
+# --- Feature: Show App Code ---
+st.markdown("---") # Add a separator
+st.header('App Source Code', divider='gray')
+
+# Get the path to the current script
+# Using Path(__file__) is robust for finding the script's own path
+current_script_path = Path(__file__)
+
+try:
+    with open(current_script_path, 'r') as f:
+        app_code = f.read()
+    with st.expander("Click to view the Python code for this app"):
+        st.code(app_code, language='python')
+except Exception as e:
+    st.error(f"Could not load app source code: {e}")

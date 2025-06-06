@@ -1,151 +1,143 @@
 import streamlit as st
 import pandas as pd
-import math
 from pathlib import Path
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title='Capital and Budget Monitoring Tool',
+    page_icon=':chart_with_upwards_trend:', # A new emoji icon
 )
 
 # -----------------------------------------------------------------------------
 # Declare some useful functions.
 
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_project_data(uploaded_file):
+    """Loads project data from an uploaded CSV file.
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
+    Assumes the CSV has columns: 'Project Name', 'Date', 'Budget', 'Actual Spend'.
+    The 'Date' column will be converted to datetime objects.
     """
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+        # Ensure essential columns exist
+        required_columns = ['Project Name', 'Date', 'Budget', 'Actual Spend']
+        if not all(col in df.columns for col in required_columns):
+            st.error(f"The uploaded CSV must contain the following columns: {', '.join(required_columns)}")
+            return pd.DataFrame() # Return an empty DataFrame if columns are missing
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
+        df['Date'] = pd.to_datetime(df['Date'])
+        return df
+    return pd.DataFrame() # Return an empty DataFrame if no file is uploaded
 
 # -----------------------------------------------------------------------------
 # Draw the actual page
 
-# Set the title that appears at the top of the page.
 '''
-# :earth_americas: GDP dashboard
+# :chart_with_upwards_trend: Capital and Budget Monitoring Tool
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
+Upload your project budget and actual spend data to visualize and monitor your projects.
 '''
 
-# Add some spacing
 ''
 ''
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+uploaded_file = st.file_uploader("Upload your project data CSV", type=["csv"])
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+project_df = load_project_data(uploaded_file)
 
-countries = gdp_df['Country Code'].unique()
+if not project_df.empty:
+    min_date = project_df['Date'].min()
+    max_date = project_df['Date'].max()
 
-if not len(countries):
-    st.warning("Select at least one country")
+    from_date, to_date = st.slider(
+        'Select the date range:',
+        min_value=min_date.to_datetime(),
+        max_value=max_date.to_datetime(),
+        value=[min_date.to_datetime(), max_date.to_datetime()],
+        format="YYYY-MM-DD"
+    )
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+    projects = project_df['Project Name'].unique()
 
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+    if not len(projects):
+        st.warning("No projects found in the uploaded data.")
+    else:
+        selected_projects = st.multiselect(
+            'Which projects would you like to view?',
+            projects,
+            projects # Default to selecting all projects
         )
+
+        ''
+        ''
+        ''
+
+        # Filter the data
+        filtered_project_df = project_df[
+            (project_df['Project Name'].isin(selected_projects))
+            & (project_df['Date'] >= from_date)
+            & (project_df['Date'] <= to_date)
+        ]
+
+        st.header('Budget vs Actual Spend Over Time', divider='gray')
+
+        if filtered_project_df.empty:
+            st.info("No data available for the selected projects and date range.")
+        else:
+            # Prepare data for plotting: melt 'Budget' and 'Actual Spend' into 'Value' for consistent plotting
+            chart_df = filtered_project_df.melt(
+                id_vars=['Project Name', 'Date'],
+                value_vars=['Budget', 'Actual Spend'],
+                var_name='Type',
+                value_name='Amount'
+            )
+
+            st.line_chart(
+                chart_df,
+                x='Date',
+                y='Amount',
+                color='Type',
+                use_container_width=True
+            )
+
+            st.header('Project Performance Summary', divider='gray')
+
+            # Calculate and display under/over budget projects
+            # For simplicity, we'll calculate the total budget and actual for the selected period per project
+            # You might want to adjust this to be month-by-month for a more detailed view if needed.
+            summary_df = filtered_project_df.groupby('Project Name').agg(
+                Total_Budget=('Budget', 'sum'),
+                Total_Actual=('Actual Spend', 'sum')
+            ).reset_index()
+
+            summary_df['Percentage_Deviation'] = ((summary_df['Total_Actual'] - summary_df['Total_Budget']) / summary_df['Total_Budget']) * 100
+
+            st.write("Projects that are **over 10%** or **under -10%** of budget:")
+
+            highlighted_projects = summary_df[
+                (summary_df['Percentage_Deviation'] > 10) | (summary_df['Percentage_Deviation'] < -10)
+            ]
+
+            if not highlighted_projects.empty:
+                for index, row in highlighted_projects.iterrows():
+                    project_name = row['Project Name']
+                    deviation = row['Percentage_Deviation']
+                    total_budget = row['Total_Budget']
+                    total_actual = row['Total_Actual']
+
+                    if deviation > 10:
+                        st.markdown(
+                            f"<p style='color:red;'>**{project_name}**: Actual Spend: ${total_actual:,.2f} (Over budget by {deviation:.2f}%)</p>",
+                            unsafe_allow_html=True
+                        )
+                    elif deviation < -10:
+                        st.markdown(
+                            f"<p style='color:green;'>**{project_name}**: Actual Spend: ${total_actual:,.2f} (Under budget by {abs(deviation):.2f}%)</p>",
+                            unsafe_allow_html=True
+                        )
+            else:
+                st.info("No projects are currently over or under 10% of their budget for the selected period.")
+
+else:
+    st.info("Please upload a CSV file to get started.")

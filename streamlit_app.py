@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
+import datetime # Import the datetime module
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
@@ -47,14 +48,18 @@ uploaded_file = st.file_uploader("Upload your project data CSV", type=["csv"])
 project_df = load_project_data(uploaded_file)
 
 if not project_df.empty:
-    min_date = project_df['Date'].min()
-    max_date = project_df['Date'].max()
+    min_date_pd = project_df['Date'].min()
+    max_date_pd = project_df['Date'].max()
+
+    # Convert pandas Timestamps to Python datetime.date objects for the slider
+    min_date = min_date_pd.date()
+    max_date = max_date_pd.date()
 
     from_date, to_date = st.slider(
         'Select the date range:',
-        min_value=min_date, # Removed .to_datetime()
-        max_value=max_date, # Removed .to_datetime()
-        value=[min_date, max_date], # Removed .to_datetime()
+        min_value=min_date,
+        max_value=max_date,
+        value=[min_date, max_date],
         format="YYYY-MM-DD"
     )
 
@@ -74,16 +79,23 @@ if not project_df.empty:
         ''
 
         # Filter the data
+        # Note: When comparing with `from_date` and `to_date` from the slider,
+        # which are `datetime.date` objects, ensure the DataFrame's 'Date' column
+        # is also comparable. `pd.to_datetime` usually includes time, so ensure
+        # the comparison is appropriate (e.g., convert DataFrame's 'Date' to date part).
+        # Or, better, ensure the filter handles Timestamp vs date correctly.
+        # For direct comparison with `datetime.date` objects, we can use `.dt.date`
+        # on the DataFrame column.
         filtered_project_df = project_df[
             (project_df['Project Name'].isin(selected_projects))
-            & (project_df['Date'] >= from_date)
-            & (project_df['Date'] <= to_date)
+            & (project_df['Date'].dt.date >= from_date) # Convert to date part for comparison
+            & (project_df['Date'].dt.date <= to_date)   # Convert to date part for comparison
         ]
 
         st.header('Budget vs Actual Spend Over Time', divider='gray')
 
         if filtered_project_df.empty:
-            st.info("No data available for the selected projects and date range.")
+            st.info("No data available for the selected projects and date range. Please adjust your selections or upload more data.")
         else:
             # Prepare data for plotting: melt 'Budget' and 'Actual Spend' into 'Value' for consistent plotting
             chart_df = filtered_project_df.melt(
@@ -104,14 +116,18 @@ if not project_df.empty:
             st.header('Project Performance Summary', divider='gray')
 
             # Calculate and display under/over budget projects
-            # For simplicity, we'll calculate the total budget and actual for the selected period per project
-            # You might want to adjust this to be month-by-month for a more detailed view if needed.
             summary_df = filtered_project_df.groupby('Project Name').agg(
                 Total_Budget=('Budget', 'sum'),
                 Total_Actual=('Actual Spend', 'sum')
             ).reset_index()
 
-            summary_df['Percentage_Deviation'] = ((summary_df['Total_Actual'] - summary_df['Total_Budget']) / summary_df['Total_Budget']) * 100
+            # Handle division by zero for projects with 0 budget
+            summary_df['Percentage_Deviation'] = summary_df.apply(
+                lambda row: ((row['Total_Actual'] - row['Total_Budget']) / row['Total_Budget']) * 100
+                if row['Total_Budget'] != 0 else float('inf') if row['Total_Actual'] > 0 else 0,
+                axis=1
+            )
+
 
             st.write("Projects that are **over 10%** or **under -10%** of budget:")
 

@@ -52,9 +52,9 @@ if not project_df.empty:
 
     from_date, to_date = st.slider(
         'Select the date range:',
-        min_value=min_date.to_datetime(),
-        max_value=max_date.to_datetime(),
-        value=[min_date.to_datetime(), max_date.to_datetime()],
+        min_value=min_date, # Removed .to_datetime()
+        max_value=max_date, # Removed .to_datetime()
+        value=[min_date, max_date], # Removed .to_datetime()
         format="YYYY-MM-DD"
     )
 

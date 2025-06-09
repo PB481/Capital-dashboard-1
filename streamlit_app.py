@@ -163,88 +163,12 @@ if not project_df.empty:
             chart_for_report = None # No chart if no data
             summary_df = pd.DataFrame() # Empty summary
         else:
-            # --- START MODIFICATIONS FOR THE GRAPH ---
-            # Calculate the deviation BEFORE melting
-            filtered_project_df['Deviation'] = filtered_project_df['Actual Spend'] - filtered_project_df['Budget']
-
-            # Now, the chart_df will focus on the 'Deviation'
-            # We don't need to melt 'Budget' and 'Actual Spend' if we're showing the difference
-            chart_df = filtered_project_df[['Project Name', 'Date', 'Deviation']].copy()
-
-            # Create Altair chart for both display and report
-            chart = alt.Chart(chart_df).mark_bar().encode( # Changed to mark_bar for deviation
-                # Combine Project Name and Date on the X-axis for better readability
-                x=alt.X('Project Name:N', title='Project and Date', sort=None), # Sort=None maintains order from data if desired
-                # Group bars by date within each project if you want to see monthly deviations for example
-                # You might need to adjust this depending on how granular your dates are and how you want to show them.
-                # For a single bar per project, you might aggregate deviations first.
-                # If 'Date' is important, we can concatenate it with Project Name or use it in a different way.
-                # Let's try layering for now for clarity, or stacking if you want totals.
-
-                # Option 1: Show deviation per Project and Date (if dates are unique per project)
-                x=alt.X('Project Name', sort=None), # Keep project name on X
-                # Add 'Date' as a column for a grouped bar chart
-                # column=alt.Column('yearmonth(Date)', title='Month'), # If you want to group by month
-                y=alt.Y('Deviation', title='Amount (Actual - Budget)',
-                        axis=alt.Axis(format='$,.2f')), # Format Y-axis as currency
-
-                # Color bars based on whether deviation is positive or negative
-                color=alt.condition(
-                    alt.datum.Deviation > 0,
-                    alt.value('red'),  # The actual spend is over budget
-                    alt.value('green') # The actual spend is under budget
-                ),
-                tooltip=[
-                    'Project Name',
-                    alt.Tooltip('yearmonthdate(Date)', title='Date'), # Format date for tooltip
-                    alt.Tooltip('Budget', format='$,.2f'), # Still show budget and actual in tooltip
-                    alt.Tooltip('Actual Spend', format='$,.2f'),
-                    alt.Tooltip('Deviation', format='$,.2f', title='Deviation (Actual - Budget)')
-                ]
-            ).properties(
-                title='Budget vs Actual Spend Deviation per Project and Date'
-            ).interactive() # Make the chart interactive for zooming/panning
-
-            # If you want to show Budget and Actual as separate bars for comparison, and the deviation as a line/point,
-            # that's a different chart. Given your request, a deviation bar chart is more direct.
-
-            # If you want to see the budget and actual next to each other on the same chart,
-            # you'd go back to the melted format but adjust the x-axis to be Project Name and Type.
-            # However, the request specifically asked for "the difference".
-
-            # Let's refine the x-axis to explicitly combine Project Name and Date for a more granular view
-            # This requires creating a new column for the combined label
-            chart_df['Project_Date_Label'] = chart_df['Project Name'] + ' - ' + chart_df['Date'].dt.strftime('%Y-%m-%d')
-
-            chart = alt.Chart(chart_df).mark_bar().encode(
-                x=alt.X('Project_Date_Label:N', sort=None, title='Project - Date'),
-                y=alt.Y('Deviation:Q', title='Amount (Actual - Budget)', axis=alt.Axis(format='$,.2f')),
-                color=alt.condition(
-                    alt.datum.Deviation > 0,
-                    alt.value('red'),  # Over budget
-                    alt.value('green') # Under budget
-                ),
-                tooltip=[
-                    'Project Name',
-                    alt.Tooltip('yearmonthdate(Date)', title='Date'),
-                    alt.Tooltip('Budget', format='$,.2f'), # Ensure Budget and Actual are available in chart_df for tooltip
-                    alt.Tooltip('Actual Spend', format='$,.2f'),
-                    alt.Tooltip('Deviation', format='$,.2f', title='Deviation')
-                ]
-            ).properties(
-                title='Budget vs Actual Spend Deviation by Project and Date'
-            ).interactive()
-
-            # For the tooltip to work correctly with 'Budget' and 'Actual Spend',
-            # `filtered_project_df` must be the source of `chart_df` without dropping those columns,
-            # or `chart_df` needs to include them. Let's make sure `chart_df` has them.
-            # I'll revert chart_df creation slightly to keep Budget and Actual for tooltips.
-
-            # Updated chart_df creation to keep Budget and Actual for tooltips
+            # Calculate the deviation and create the combined label
             chart_df = filtered_project_df.copy() # Start with the full filtered df
             chart_df['Deviation'] = chart_df['Actual Spend'] - chart_df['Budget']
             chart_df['Project_Date_Label'] = chart_df['Project Name'] + ' - ' + chart_df['Date'].dt.strftime('%Y-%m-%d')
 
+            # Create Altair chart for both display and report
             chart = alt.Chart(chart_df).mark_bar().encode(
                 x=alt.X('Project_Date_Label:N', sort=None, title='Project - Date'),
                 y=alt.Y('Deviation:Q', title='Amount (Actual - Budget)', axis=alt.Axis(format='$,.2f')),
@@ -263,7 +187,6 @@ if not project_df.empty:
             ).properties(
                 title='Budget vs Actual Spend Deviation by Project and Date'
             ).interactive()
-            # --- END MODIFICATIONS FOR THE GRAPH ---
 
             st.altair_chart(chart, use_container_width=True)
             chart_for_report = chart # Assign chart object for report generation

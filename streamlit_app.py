@@ -33,7 +33,7 @@ def load_project_data(uploaded_file):
         return df
     return pd.DataFrame() # Return an empty DataFrame if no file is uploaded
 
-def generate_html_report(filtered_df, summary_df, chart_object, from_date, to_date):
+def generate_html_report(filtered_df, summary_df, chart_object_deviation, chart_object_tracking, from_date, to_date):
     """Generates an HTML report string from the app's data and visualizations."""
     html_content = f"""
     <!DOCTYPE html>
@@ -62,14 +62,21 @@ def generate_html_report(filtered_df, summary_df, chart_object, from_date, to_da
         <h2>1. Filtered Project Data</h2>
         {filtered_df.to_html(index=False)}
 
-        <h2>2. Budget vs Actual Spend Over Time</h2>
-        <div id="chart" class="chart-container"></div>
+        <h2>2. Budget vs Actual Spend Deviation Over Time</h2>
+        <div id="chart_deviation" class="chart-container"></div>
         <script type="text/javascript">
-            var spec = {chart_object.to_json(indent=None)};
-            vegaEmbed('#chart', spec, {{mode: "vega-lite"}}).catch(console.error);
+            var spec_deviation = {chart_object_deviation.to_json(indent=None)};
+            vegaEmbed('#chart_deviation', spec_deviation, {{mode: "vega-lite"}}).catch(console.error);
         </script>
 
-        <h2>3. Project Performance Summary</h2>
+        <h2>3. Budget and Actual Spend Tracking</h2>
+        <div id="chart_tracking" class="chart-container"></div>
+        <script type="text/javascript">
+            var spec_tracking = {chart_object_tracking.to_json(indent=None)};
+            vegaEmbed('#chart_tracking', spec_tracking, {{mode: "vega-lite"}}).catch(console.error);
+        </script>
+
+        <h2>4. Project Performance Summary</h2>
         {summary_df.to_html(index=False, float_format='%.2f')}
 
         <h3>Projects over 10% or under -10% of budget:</h3>
@@ -154,22 +161,24 @@ if not project_df.empty:
             (project_df['Project Name'].isin(selected_projects))
             & (project_df['Date'].dt.date >= from_date)
             & (project_df['Date'].dt.date <= to_date)
-        ]
+        ].copy() # Use .copy() to avoid SettingWithCopyWarning
 
-        st.header('Budget vs Actual Spend Over Time', divider='gray')
+        # --- First Chart: Budget vs Actual Spend DEVIATION ---
+        st.header('Budget vs Actual Spend Deviation Over Time', divider='gray')
 
         if filtered_project_df.empty:
             st.info("No data available for the selected projects and date range. Please adjust your selections or upload more data.")
-            chart_for_report = None # No chart if no data
+            chart_for_report_deviation = None # No chart if no data
+            chart_for_report_tracking = None # No chart if no data
             summary_df = pd.DataFrame() # Empty summary
         else:
             # Calculate the deviation and create the combined label
-            chart_df = filtered_project_df.copy() # Start with the full filtered df
-            chart_df['Deviation'] = chart_df['Actual Spend'] - chart_df['Budget']
-            chart_df['Project_Date_Label'] = chart_df['Project Name'] + ' - ' + chart_df['Date'].dt.strftime('%Y-%m-%d')
+            chart_df_deviation = filtered_project_df.copy() # Start with the full filtered df
+            chart_df_deviation['Deviation'] = chart_df_deviation['Actual Spend'] - chart_df_deviation['Budget']
+            chart_df_deviation['Project_Date_Label'] = chart_df_deviation['Project Name'] + ' - ' + chart_df_deviation['Date'].dt.strftime('%Y-%m-%d')
 
             # Create Altair chart for both display and report
-            chart = alt.Chart(chart_df).mark_bar().encode(
+            chart_deviation = alt.Chart(chart_df_deviation).mark_bar().encode(
                 x=alt.X('Project_Date_Label:N', sort=None, title='Project - Date'),
                 y=alt.Y('Deviation:Q', title='Amount (Actual - Budget)', axis=alt.Axis(format='$,.2f')),
                 color=alt.condition(
@@ -188,8 +197,42 @@ if not project_df.empty:
                 title='Budget vs Actual Spend Deviation by Project and Date'
             ).interactive()
 
-            st.altair_chart(chart, use_container_width=True)
-            chart_for_report = chart # Assign chart object for report generation
+            st.altair_chart(chart_deviation, use_container_width=True)
+            chart_for_report_deviation = chart_deviation # Assign chart object for report generation
+
+            # --- New Chart: Budget and Actual Spend Tracking ---
+            st.header('Budget and Actual Spend Tracking', divider='gray')
+
+            # Prepare data for the new line chart
+            # Melt the DataFrame to have 'Budget' and 'Actual Spend' as categories in a 'Type' column
+            # This is necessary to plot them as separate lines.
+            chart_df_tracking = filtered_project_df.melt(
+                id_vars=['Project Name', 'Date'],
+                value_vars=['Budget', 'Actual Spend'],
+                var_name='Type',
+                value_name='Amount'
+            )
+            # Create a combined 'Project_Date_Label' for the x-axis
+            chart_df_tracking['Project_Date_Label'] = chart_df_tracking['Project Name'] + ' - ' + chart_df_tracking['Date'].dt.strftime('%Y-%m-%d')
+
+            # Create the line chart
+            chart_tracking = alt.Chart(chart_df_tracking).mark_line(point=True).encode(
+                x=alt.X('Project_Date_Label:N', sort=None, title='Project - Date'),
+                y=alt.Y('Amount:Q', title='Amount', axis=alt.Axis(format='$,.2f')),
+                color=alt.Color('Type:N', title='Spend Type', legend=alt.Legend(orient="bottom")),
+                tooltip=[
+                    'Project Name',
+                    alt.Tooltip('yearmonthdate(Date)', title='Date'),
+                    alt.Tooltip('Type', title='Spend Type'),
+                    alt.Tooltip('Amount', format='$,.2f')
+                ]
+            ).properties(
+                title='Budget and Actual Spend Tracking by Project and Date'
+            ).interactive()
+
+            st.altair_chart(chart_tracking, use_container_width=True)
+            chart_for_report_tracking = chart_tracking # Assign chart object for report generation
+
 
             st.header('Project Performance Summary', divider='gray')
 
@@ -248,8 +291,8 @@ if not project_df.empty:
             )
 
         with col2:
-            if chart_for_report is not None and not filtered_project_df.empty:
-                html_report_content = generate_html_report(filtered_project_df, summary_df, chart_for_report, from_date, to_date)
+            if chart_for_report_deviation is not None and chart_for_report_tracking is not None and not filtered_project_df.empty:
+                html_report_content = generate_html_report(filtered_project_df, summary_df, chart_for_report_deviation, chart_for_report_tracking, from_date, to_date)
                 st.download_button(
                     label="Generate HTML Report",
                     data=html_report_content.encode('utf-8'),
@@ -262,7 +305,8 @@ if not project_df.empty:
 
 else:
     st.info("Please upload a CSV file to get started.")
-    chart_for_report = None # No chart if no data
+    chart_for_report_deviation = None # No chart if no data
+    chart_for_report_tracking = None # No chart if no data
     summary_df = pd.DataFrame() # Empty summary
 
 # --- Feature: Show App Code ---

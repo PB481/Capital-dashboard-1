@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import io
 import inspect
+from datetime import datetime
 
 # Set page configuration for a wider layout
 st.set_page_config(layout="wide", page_title="Capital Project Portfolio Dashboard")
@@ -29,7 +30,7 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     # A helper function to clean individual column names
     def clean_col_name(col_name: str) -> str:
         """Cleans a single column name."""
-        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '').replace('-', '_')
+        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '-').replace('-', '_') # Keep '.' for month formats, replace with '-' temporarily
         # Replace multiple underscores with a single underscore
         col_name = '_'.join(filter(None, col_name.split('_')))
         col_name = col_name.upper()
@@ -40,7 +41,7 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
             'INI_MATIVE_PROGRAM': 'INITIATIVE_PROGRAM',
             'ALL_PRIOR_YEARS_A': 'ALL_PRIOR_YEARS_ACTUALS',
             'C_URRENT_EAC': 'CURRENT_EAC',
-            'QE_RUN_RATE': 'QE_RUN_RATE', # Ensure consistency
+            'QE_RUN_RATE': 'QE_RUN_RATE',
             'RATE_1': 'RATE_SUPPLEMENTARY' # Example of better naming for duplicate 'RATE'
         }
         return corrections.get(col_name, col_name)
@@ -49,7 +50,6 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     df.columns = [clean_col_name(col) for col in df.columns]
 
     # Handle duplicate column names by making them unique (e.g., Rate, Rate_1)
-    # This approach appends a number only if a duplicate truly exists
     cols = []
     seen = {}
     for col in df.columns:
@@ -63,7 +63,8 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
 
     # Identify financial columns that need numeric conversion
     # Dynamically find columns that look like financial data (e.g., end with _A, _F, _CP or are specific financial metrics)
-    financial_pattern = r'^(20\d{2}_\d{2}_[AFCPL]|ALL_PRIOR_YEARS_ACTUALS|BUSINESS_ALLOCATION|CURRENT_EAC|QE_FORECAST_VS_QE_PLAN|FORECAST_VS_BA|YE_RUN|RATE|QE_RUN|RATE_SUPPLEMENTARY)$'
+    # Adjusted regex to handle potential double underscore after year/month if clean_col_name accidentally creates it.
+    financial_pattern = r'^(20\d{2}_\d{2}_(A|F|CP)(_\d+)?|ALL_PRIOR_YEARS_ACTUALS|BUSINESS_ALLOCATION|CURRENT_EAC|QE_FORECAST_VS_QE_PLAN|FORECAST_VS_BA|YE_RUN|RATE|QE_RUN|RATE_SUPPLEMENTARY)$'
     financial_cols_to_convert = [col for col in df.columns if pd.Series([col]).str.contains(financial_pattern, regex=True).any()]
 
     # Convert identified financial columns to numeric, handling commas, spaces, and errors
@@ -72,10 +73,13 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.replace(',', '').str.strip().replace('', '0')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Identify monthly columns for 2025 (or any year starting with '20' followed by two digits)
-    monthly_actuals_cols = [col for col in df.columns if col.startswith('20') and col.endswith('_A')]
-    monthly_forecasts_cols = [col for col in df.columns if col.startswith('20') and col.endswith('_F')]
-    monthly_plan_cols = [col for col in df.columns if col.startswith('20') and col.endswith('_CP')]
+    # Identify monthly columns for calculations, being flexible with the year
+    current_year = datetime.now().year
+    current_month = datetime.now().month
+
+    monthly_actuals_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_A')]
+    monthly_forecasts_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_F')]
+    monthly_plan_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_CP')]
 
     # Ensure all identified monthly columns are numeric (redundant with previous step but good for safety)
     for col_list in [monthly_actuals_cols, monthly_forecasts_cols, monthly_plan_cols]:
@@ -83,25 +87,62 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Calculate total 2025 Actuals, Forecasts, and Plans
-    df['TOTAL_2025_ACTUALS'] = df[monthly_actuals_cols].sum(axis=1) if monthly_actuals_cols else 0
-    df['TOTAL_2025_FORECASTS'] = df[monthly_forecasts_cols].sum(axis=1) if monthly_forecasts_cols else 0
-    df['TOTAL_2025_CAPITAL_PLAN'] = df[monthly_plan_cols].sum(axis=1) if monthly_plan_cols else 0
+    # Calculate total Actuals, Forecasts, and Plans for the current year
+    df[f'TOTAL_{current_year}_ACTUALS'] = df[monthly_actuals_cols].sum(axis=1) if monthly_actuals_cols else 0
+    df[f'TOTAL_{current_year}_FORECASTS'] = df[monthly_forecasts_cols].sum(axis=1) if monthly_forecasts_cols else 0
+    df[f'TOTAL_{current_year}_CAPITAL_PLAN'] = df[monthly_plan_cols].sum(axis=1) if monthly_plan_cols else 0
 
-    # Calculate Total Actuals to Date (Prior Years + 2025 Actuals)
-    # Check if 'ALL_PRIOR_YEARS_ACTUALS' exists before summing
+    # Calculate Total Actuals to Date (Prior Years + Current Year Actuals)
     if 'ALL_PRIOR_YEARS_ACTUALS' in df.columns:
-        df['TOTAL_ACTUALS_TO_DATE'] = df['ALL_PRIOR_YEARS_ACTUALS'] + df['TOTAL_2025_ACTUALS']
+        df['TOTAL_ACTUALS_TO_DATE'] = df['ALL_PRIOR_YEARS_ACTUALS'] + df[f'TOTAL_{current_year}_ACTUALS']
     else:
-        df['TOTAL_ACTUALS_TO_DATE'] = df['TOTAL_2025_ACTUALS']
-        st.warning("Column 'ALL_PRIOR_YEARS_ACTUALS' not found. 'TOTAL_ACTUALS_TO_DATE' only includes 2025 actuals.")
+        df['TOTAL_ACTUALS_TO_DATE'] = df[f'TOTAL_{current_year}_ACTUALS']
+        st.warning("Column 'ALL_PRIOR_YEARS_ACTUALS' not found. 'TOTAL_ACTUALS_TO_DATE' only includes current year actuals.")
+
+    # --- New Metrics Calculations ---
+
+    # Sum of Actual Spend over the months (YTD) for the current year
+    # Only sum actuals up to the current month
+    ytd_actual_cols = [col for col in monthly_actuals_cols if int(col.split('_')[1]) <= current_month]
+    df['SUM_ACTUAL_SPEND_YTD'] = df[ytd_actual_cols].sum(axis=1) if ytd_actual_cols else 0
+
+    # Forecasted spend over the next month
+    next_month = current_month + 1
+    next_month_str = f"{current_year}_{next_month:02d}_F"
+    df['FORECASTED_SPEND_NEXT_MONTH'] = df[next_month_str] if next_month_str in df.columns else 0
+
+    # Total Capital Plan (already calculated as TOTAL_2025_CAPITAL_PLAN, just rename for clarity if needed)
+    df['TOTAL_CAPITAL_PLAN_SUM'] = df[f'TOTAL_{current_year}_CAPITAL_PLAN']
+
+    # Run rate per month based on actuals, forecast, and capital plans
+    # Simplistic run rate: Total Actuals + Total Forecasts / Number of months with data
+    # This can be more complex depending on definition, using current approach for now
+    total_spend_for_run_rate = df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']
+    number_of_months_with_data = len(monthly_actuals_cols) # Assuming all monthly columns are for the full year 12 months for calculation
+    if number_of_months_with_data > 0:
+        df['RUN_RATE_PER_MONTH'] = total_spend_for_run_rate / number_of_months_with_data
+    else:
+        df['RUN_RATE_PER_MONTH'] = 0
+
+
+    # Capital Total Under Spend and Overspend
+    # Assuming 'BUSINESS_ALLOCATION' is the target for comparison
+    if 'BUSINESS_ALLOCATION' in df.columns:
+        df['CAPITAL_VARIANCE'] = df['BUSINESS_ALLOCATION'] - df[f'TOTAL_{current_year}_FORECASTS']
+        df['CAPITAL_UNDERSPEND'] = df['CAPITAL_VARIANCE'].apply(lambda x: x if x > 0 else 0)
+        df['CAPITAL_OVERSPEND'] = df['CAPITAL_VARIANCE'].apply(lambda x: abs(x) if x < 0 else 0)
+    else:
+        df['CAPITAL_VARIANCE'] = 0
+        df['CAPITAL_UNDERSPEND'] = 0
+        df['CAPITAL_OVERSPEND'] = 0
+        st.warning("Column 'BUSINESS_ALLOCATION' not found for calculating under/over spend.")
+
+    # Net amount to confirm if we need to reallocate capital
+    df['NET_REALLOCATION_AMOUNT'] = df['CAPITAL_UNDERSPEND'] - df['CAPITAL_OVERSPEND']
 
     return df
 
----
-
-# Streamlit Application
-
+# --- Streamlit App Layout ---
 st.title("💰 Capital Project Portfolio Dashboard")
 st.markdown("""
     This dashboard provides an interactive overview of your capital projects, allowing you to track financials,
@@ -122,7 +163,8 @@ if uploaded_file is not None:
             "PORTFOLIO_OBS_LEVEL1": "Select Portfolio Level",
             "SUB_PORTFOLIO_OBS_LEVEL2": "Select Sub-Portfolio Level",
             "PROJECT_MANAGER": "Select Project Manager",
-            "BRS_CLASSIFICATION": "Select BRS Classification"
+            "BRS_CLASSIFICATION": "Select BRS Classification",
+            "FUND_DECISION": "Select Fund Decision" # New Filter
         }
 
         selected_filters = {}
@@ -131,7 +173,10 @@ if uploaded_file is not None:
                 options = ['All'] + df[col_name].dropna().unique().tolist()
                 selected_filters[col_name] = st.sidebar.selectbox(display_name, options)
             else:
-                st.sidebar.info(f"Column '{col_name}' not found for filtering.")
+                # Only show info if the column is explicitly expected by the user (like new FUND_DECISION)
+                # For existing ones, load_data handles warnings.
+                if col_name == "FUND_DECISION":
+                    st.sidebar.info(f"Column '{col_name}' not found for filtering.")
                 selected_filters[col_name] = 'All' # Set to 'All' if column is missing
 
         # Apply filters
@@ -145,11 +190,10 @@ if uploaded_file is not None:
             st.warning("No projects match the selected filters. Please adjust your selections.")
             st.stop() # Stop execution if no data is left after filtering
 
-        ---
-
-        ## Key Metrics Overview
-
-        col1, col2, col3, col4 = st.columns(4)
+        # --- Key Metrics Overview ---
+        st.subheader("Key Metrics Overview")
+        # Update columns for new metrics
+        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
 
         # Use .get() with a default value for robustness in case columns are missing
         # though load_data should ensure their existence.
@@ -165,18 +209,47 @@ if uploaded_file is not None:
         with col4:
             total_projects = len(filtered_df)
             st.metric(label="Number of Projects", value=total_projects)
+        with col5:
+            # New Metric: Sum of Actual Spend (YTD)
+            sum_actual_spend_ytd = filtered_df['SUM_ACTUAL_SPEND_YTD'].sum() if 'SUM_ACTUAL_SPEND_YTD' in filtered_df.columns else 0
+            st.metric(label="Sum Actual Spend (YTD)", value=f"${sum_actual_spend_ytd:,.2f}")
+        with col6:
+            # New Metric: Forecasted Spend Next Month
+            forecasted_spend_next_month = filtered_df['FORECASTED_SPEND_NEXT_MONTH'].sum() if 'FORECASTED_SPEND_NEXT_MONTH' in filtered_df.columns else 0
+            st.metric(label="Forecasted Spend Next Month", value=f"${forecasted_spend_next_month:,.2f}")
+        with col7:
+            # New Metric: Total Capital Plan
+            total_capital_plan_sum = filtered_df['TOTAL_CAPITAL_PLAN_SUM'].sum() if 'TOTAL_CAPITAL_PLAN_SUM' in filtered_df.columns else 0
+            st.metric(label="Total Capital Plan", value=f"${total_capital_plan_sum:,.2f}")
 
-        ---
+        # New Metrics: Run Rate, Under/Over Spend, Net Reallocation
+        col_new_metrics1, col_new_metrics2, col_new_metrics3, col_new_metrics4 = st.columns(4)
+        with col_new_metrics1:
+            run_rate_per_month = filtered_df['RUN_RATE_PER_MONTH'].mean() if 'RUN_RATE_PER_MONTH' in filtered_df.columns else 0
+            st.metric(label="Average Run Rate / Month", value=f"${run_rate_per_month:,.2f}")
+        with col_new_metrics2:
+            capital_underspend = filtered_df['CAPITAL_UNDERSPEND'].sum() if 'CAPITAL_UNDERSPEND' in filtered_df.columns else 0
+            st.metric(label="Total Potential Underspend", value=f"${capital_underspend:,.2f}")
+        with col_new_metrics3:
+            capital_overspend = filtered_df['CAPITAL_OVERSPEND'].sum() if 'CAPITAL_OVERSPEND' in filtered_df.columns else 0
+            st.metric(label="Total Potential Overspend", value=f"${capital_overspend:,.2f}")
+        with col_new_metrics4:
+            net_reallocation_amount = filtered_df['NET_REALLOCATION_AMOUNT'].sum() if 'NET_REALLOCATION_AMOUNT' in filtered_df.columns else 0
+            st.metric(label="Net Reallocation Amount", value=f"${net_reallocation_amount:,.2f}")
 
-        ## Project Details
 
+        st.markdown("---")
+
+        # --- Project Table ---
+        st.subheader("Project Details")
         # Define columns to display in the project details table
         project_table_cols = [
             'PORTFOLIO_OBS_LEVEL1', 'SUB_PORTFOLIO_OBS_LEVEL2', 'MASTER_PROJECT_ID',
-            'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION',
+            'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION', 'FUND_DECISION', # Added FUND_DECISION
             'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
-            'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN',
-            'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA'
+            f'TOTAL_{datetime.now().year}_ACTUALS', f'TOTAL_{datetime.now().year}_FORECASTS', f'TOTAL_{datetime.now().year}_CAPITAL_PLAN',
+            'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA',
+            'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT' # Added new metrics
         ]
         # Filter to only include columns that actually exist in the filtered_df
         project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
@@ -185,7 +258,8 @@ if uploaded_file is not None:
         financial_format_map = {
             col: "${:,.2f}" for col in project_table_cols_present if col in [
                 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
-                'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN'
+                f'TOTAL_{datetime.now().year}_ACTUALS', f'TOTAL_{datetime.now().year}_FORECASTS', f'TOTAL_{datetime.now().year}_CAPITAL_PLAN',
+                'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT'
             ]
         }
         # Add specific formats for variance columns if present
@@ -197,72 +271,78 @@ if uploaded_file is not None:
         project_details_table = filtered_df[project_table_cols_present].style.format(financial_format_map)
         st.dataframe(project_details_table, use_container_width=True, hide_index=True)
 
-        ---
+        st.markdown("---")
 
-        ## 2025 Monthly Spend Trends
+        # --- 2025 Monthly Spend Trends ---
+        st.subheader(f"{datetime.now().year} Monthly Spend Trends")
 
-        # Dynamically get monthly columns that exist in the filtered DataFrame
-        monthly_actuals_cols_filtered = [col for col in filtered_df.columns if col.startswith('2025_') and col.endswith('_A')]
-        monthly_forecasts_cols_filtered = [col for col in filtered_df.columns if col.startswith('2025_') and col.endswith('_F')]
-        monthly_plan_cols_filtered = [col for col in filtered_df.columns if col.startswith('2025_') and col.endswith('_CP')]
+        current_year_str = str(datetime.now().year)
+        current_month_num = datetime.now().month
+
+        monthly_actuals_cols_filtered = [col for col in filtered_df.columns if col.startswith(f'{current_year_str}_') and col.endswith('_A')]
+        monthly_forecasts_cols_filtered = [col for col in filtered_df.columns if col.startswith(f'{current_year_str}_') and col.endswith('_F')]
+        monthly_plan_cols_filtered = [col for col in filtered_df.columns if col.startswith(f'{current_year_str}_') and col.endswith('_CP')]
 
         monthly_combined_df = pd.DataFrame()
-        if monthly_actuals_cols_filtered or monthly_forecasts_cols_filtered or monthly_plan_cols_filtered:
-            # Create data for plotting
-            data_to_concat = []
-            if monthly_actuals_cols_filtered:
-                monthly_data_actuals = filtered_df[monthly_actuals_cols_filtered].sum().reset_index()
-                monthly_data_actuals.columns = ['Month', 'Amount']
-                monthly_data_actuals['Type'] = 'Actuals'
-                data_to_concat.append(monthly_data_actuals)
+        data_to_concat = []
 
-            if monthly_forecasts_cols_filtered:
-                monthly_data_forecasts = filtered_df[monthly_forecasts_cols_filtered].sum().reset_index()
-                monthly_data_forecasts.columns = ['Month', 'Amount']
-                monthly_data_forecasts['Type'] = 'Forecasts'
-                data_to_concat.append(monthly_data_forecasts)
+        # Actuals (historic)
+        actuals_data_points = []
+        for col in monthly_actuals_cols_filtered:
+            month_num = int(col.split('_')[1])
+            if month_num <= current_month_num:
+                actuals_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Actuals'})
+        if sum(d['Amount'] for d in actuals_data_points) != 0: # Only add if sum is not zero
+            data_to_concat.append(pd.DataFrame(actuals_data_points))
 
-            if monthly_plan_cols_filtered:
-                monthly_data_plan = filtered_df[monthly_plan_cols_filtered].sum().reset_index()
-                monthly_data_plan.columns = ['Month', 'Amount']
-                monthly_data_plan['Type'] = 'Capital Plan'
-                data_to_concat.append(monthly_data_plan)
+        # Forecasts (future)
+        forecasts_data_points = []
+        for col in monthly_forecasts_cols_filtered:
+            month_num = int(col.split('_')[1])
+            if month_num > current_month_num:
+                forecasts_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Forecasts'})
+        if sum(d['Amount'] for d in forecasts_data_points) != 0: # Only add if sum is not zero
+            data_to_concat.append(pd.DataFrame(forecasts_data_points))
 
-            if data_to_concat:
-                monthly_combined_df = pd.concat(data_to_concat)
+        # Capital Plan (all months)
+        plan_data_points = []
+        for col in monthly_plan_cols_filtered:
+            month_num = int(col.split('_')[1])
+            plan_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Capital Plan'})
+        if sum(d['Amount'] for d in plan_data_points) != 0: # Only add if sum is not zero
+            data_to_concat.append(pd.DataFrame(plan_data_points))
 
-                # Ensure month order for plotting
-                month_order = [f'2025_{i:02d}' for i in range(1, 13)]
-                # Extract base month name (e.g., '2025_01' from '2025_01_A')
-                monthly_combined_df['Month_Sort'] = monthly_combined_df['Month'].apply(lambda x: '_'.join(x.split('_')[:2]))
-                monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month_Sort'], categories=month_order, ordered=True)
-                monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
 
-                fig_monthly_trends = px.line(
-                    monthly_combined_df,
-                    x='Month_Sort',
-                    y='Amount',
-                    color='Type',
-                    title='Monthly Capital Trends (Actuals, Forecasts, Plan)',
-                    labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
-                    line_shape='linear',
-                    markers=True
-                )
-                fig_monthly_trends.update_layout(hovermode="x unified", legend_title_text='Type')
-                fig_monthly_trends.update_xaxes(title_text="Month (2025)")
-                fig_monthly_trends.update_yaxes(title_text="Amount ($)")
-                st.plotly_chart(fig_monthly_trends, use_container_width=True)
-            else:
-                st.warning("No 2025 monthly actuals, forecasts, or plan data found for trend analysis after filtering.")
-                fig_monthly_trends = None # Explicitly set to None if no data
+        if data_to_concat:
+            monthly_combined_df = pd.concat(data_to_concat)
+
+            # Ensure month order for plotting
+            month_order = [f'{current_year_str}_{i:02d}' for i in range(1, 13)]
+            monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month'], categories=month_order, ordered=True)
+            monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
+
+            fig_monthly_trends = px.line(
+                monthly_combined_df,
+                x='Month_Sort',
+                y='Amount',
+                color='Type',
+                title=f'Monthly Capital Trends (Actuals, Forecasts, Plan) for {current_year_str}',
+                labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
+                line_shape='linear',
+                markers=True
+            )
+            fig_monthly_trends.update_layout(hovermode="x unified", legend_title_text='Type')
+            fig_monthly_trends.update_xaxes(title_text=f"Month ({current_year_str})")
+            fig_monthly_trends.update_yaxes(title_text="Amount ($)")
+            st.plotly_chart(fig_monthly_trends, use_container_width=True)
         else:
-            st.info("No 2025 monthly actuals, forecasts, or plan columns found in the uploaded data for trend analysis.")
-            fig_monthly_trends = None # Explicitly set to None if no columns
+            st.warning(f"No {current_year_str} monthly actuals, forecasts, or plan data found for trend analysis after filtering.")
+            fig_monthly_trends = None # Explicitly set to None if no data
 
-        ---
+        st.markdown("---")
 
-        ## Variance Analysis
-
+        # --- Variance Analysis ---
+        st.subheader("Variance Analysis")
         col_var1, col_var2 = st.columns(2)
         fig_qe_variance = None
         fig_ba_variance = None
@@ -270,7 +350,7 @@ if uploaded_file is not None:
         if 'QE_FORECAST_VS_QE_PLAN' in filtered_df.columns and not filtered_df['QE_FORECAST_VS_QE_PLAN'].isnull().all():
             with col_var1:
                 fig_qe_variance = px.bar(
-                    filtered_df,
+                    filtered_df.sort_values('QE_FORECAST_VS_QE_PLAN', ascending=False), # Sort for better visualization
                     x='PROJECT_NAME',
                     y='QE_FORECAST_VS_QE_PLAN',
                     title='QE Forecast vs QE Plan Variance',
@@ -286,7 +366,7 @@ if uploaded_file is not None:
         if 'FORECAST_VS_BA' in filtered_df.columns and not filtered_df['FORECAST_VS_BA'].isnull().all():
             with col_var2:
                 fig_ba_variance = px.bar(
-                    filtered_df,
+                    filtered_df.sort_values('FORECAST_VS_BA', ascending=False), # Sort for better visualization
                     x='PROJECT_NAME',
                     y='FORECAST_VS_BA',
                     title='Forecast vs Business Allocation Variance',
@@ -299,10 +379,10 @@ if uploaded_file is not None:
             with col_var2:
                 st.info("Column 'FORECAST_VS_BA' not found or contains no data for variance analysis.")
 
-        ---
+        st.markdown("---")
 
-        ## Capital Allocation Breakdown
-
+        # --- Capital Allocation Breakdown ---
+        st.subheader("Capital Allocation Breakdown")
         col_alloc1, col_alloc2, col_alloc3 = st.columns(3)
         fig_portfolio_alloc = None
         fig_sub_portfolio_alloc = None
@@ -350,15 +430,15 @@ if uploaded_file is not None:
         else:
             st.info("Column 'BUSINESS_ALLOCATION' not found for allocation breakdown.")
 
-        ---
+        st.markdown("---")
 
-        ## Detailed Project Financials
-
+        # --- Detailed Project Financials (on selection) ---
+        st.subheader("Detailed Project Financials")
         project_names = ['Select a Project'] + filtered_df['PROJECT_NAME'].dropna().unique().tolist()
         selected_project_name = st.selectbox("Select a project for detailed view:", project_names)
 
-        project_details = None # Initialize to None
-        fig_project_monthly = None # Initialize to None
+        project_details = None
+        fig_project_monthly = None
 
         if selected_project_name != 'Select a Project':
             project_details = filtered_df[filtered_df['PROJECT_NAME'] == selected_project_name].iloc[0]
@@ -374,13 +454,13 @@ if uploaded_file is not None:
             with col_d3:
                 st.metric(label="All Prior Years Actuals", value=f"${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}")
 
-            st.write("#### 2025 Monthly Breakdown:")
+            st.write(f"#### {current_year_str} Monthly Breakdown:")
             # Generate monthly breakdown DataFrame dynamically based on available columns
-            monthly_breakdown_data = {'Month': [f"2025_{i:02d}" for i in range(1, 13)]}
+            monthly_breakdown_data = {'Month': [f"{current_year_str}_{i:02d}" for i in range(1, 13)]}
             monthly_types = {'_A': 'Actuals', '_F': 'Forecasts', '_CP': 'Capital Plan'}
 
             for suffix, display_name in monthly_types.items():
-                col_prefix = '2025_'
+                col_prefix = f'{current_year_str}_'
                 monthly_values = []
                 for i in range(1, 13):
                     col_name_full = f"{col_prefix}{i:02d}{suffix}"
@@ -390,12 +470,12 @@ if uploaded_file is not None:
             monthly_breakdown_df = pd.DataFrame(monthly_breakdown_data)
 
             # Format the monthly breakdown table
-            monthly_format_map = {
+            monthly_format_map_details = {
                 'Actuals': "${:,.2f}",
                 'Forecasts': "${:,.2f}",
                 'Capital Plan': "${:,.2f}"
             }
-            st.dataframe(monthly_breakdown_df.style.format(monthly_format_map), use_container_width=True, hide_index=True)
+            st.dataframe(monthly_breakdown_df.style.format(monthly_format_map_details), use_container_width=True, hide_index=True)
 
             # Bar chart for monthly breakdown for the selected project
             monthly_project_melted = monthly_breakdown_df.melt(id_vars=['Month'], var_name='Type', value_name='Amount')
@@ -414,19 +494,111 @@ if uploaded_file is not None:
         else:
             st.info("Select a project from the dropdown to see its detailed monthly financials.")
 
-        ---
+        st.markdown("---")
 
-        ## Generate Professional Report
+        # --- Project Manager Performance ---
+        st.subheader("Project Manager Performance")
 
+        if 'PROJECT_MANAGER' in filtered_df.columns and f'TOTAL_{current_year}_FORECASTS' in filtered_df.columns and f'TOTAL_{current_year}_CAPITAL_PLAN' in filtered_df.columns:
+            # Calculate variance for project managers
+            pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
+                Total_Forecast_Spend=(f'TOTAL_{current_year}_FORECASTS', 'sum'),
+                Total_Capital_Plan=(f'TOTAL_{current_year}_CAPITAL_PLAN', 'sum'),
+                Total_Actual_Spend=(f'TOTAL_{current_year}_ACTUALS', 'sum') # Include actuals for better context
+            ).reset_index()
+
+            # Calculate the absolute difference from plan/forecast
+            pm_performance['Forecast_vs_Plan_Variance'] = pm_performance['Total_Forecast_Spend'] - pm_performance['Total_Capital_Plan']
+            pm_performance['Actual_vs_Forecast_Variance'] = pm_performance['Total_Actual_Spend'] - pm_performance['Total_Forecast_Spend']
+
+            # A combined score for "closeness" - sum of absolute variances
+            pm_performance['Combined_Variance_Score'] = (
+                pm_performance['Forecast_vs_Plan_Variance'].abs() +
+                pm_performance['Actual_vs_Forecast_Variance'].abs()
+            )
+
+            pm_performance = pm_performance.sort_values('Combined_Variance_Score')
+
+            st.write("#### Top 5 Project Managers (Closest to Plans/Forecasts)")
+            st.dataframe(pm_performance.head(5).style.format({
+                'Total_Forecast_Spend': "${:,.2f}",
+                'Total_Capital_Plan': "${:,.2f}",
+                'Total_Actual_Spend': "${:,.2f}",
+                'Forecast_vs_Plan_Variance': "{:,.2f}",
+                'Actual_vs_Forecast_Variance': "{:,.2f}",
+                'Combined_Variance_Score': "{:,.2f}"
+            }), use_container_width=True, hide_index=True)
+
+            st.write("#### Bottom 5 Project Managers (Furthest from Plans/Forecasts)")
+            st.dataframe(pm_performance.tail(5).sort_values('Combined_Variance_Score', ascending=False).style.format({
+                'Total_Forecast_Spend': "${:,.2f}",
+                'Total_Capital_Plan': "${:,.2f}",
+                'Total_Actual_Spend': "${:,.2f}",
+                'Forecast_vs_Plan_Variance': "{:,.2f}",
+                'Actual_vs_Forecast_Variance': "{:,.2f}",
+                'Combined_Variance_Score': "{:,.2f}"
+            }), use_container_width=True, hide_index=True)
+        else:
+            st.info("Required columns for Project Manager Performance (PROJECT_MANAGER, TOTAL_YEAR_FORECASTS, TOTAL_YEAR_CAPITAL_PLAN) not found.")
+
+        st.markdown("---")
+
+        # --- Project Performance ---
+        st.subheader("Project Performance")
+
+        # This leverages the 'CAPITAL_VARIANCE' calculated in load_data
+        if 'CAPITAL_VARIANCE' in filtered_df.columns:
+            project_performance = filtered_df.copy()
+            project_performance['Absolute_Capital_Variance'] = project_performance['CAPITAL_VARIANCE'].abs()
+
+            best_projects = project_performance.sort_values('Absolute_Capital_Variance').head(5)
+            worst_projects = project_performance.sort_values('Absolute_Capital_Variance', ascending=False).head(5)
+
+            st.write("#### Top 5 Best Behaving Projects (Closest to Business Allocation)")
+            st.dataframe(best_projects[[
+                'PROJECT_NAME', 'BUSINESS_ALLOCATION', 'TOTAL_2025_FORECASTS',
+                'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+            ]].style.format({
+                'BUSINESS_ALLOCATION': "${:,.2f}",
+                f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
+                'CAPITAL_VARIANCE': "{:,.2f}",
+                'Absolute_Capital_Variance': "{:,.2f}"
+            }), use_container_width=True, hide_index=True)
+
+            st.write("#### Bottom 5 Worst Behaving Projects (Furthest from Business Allocation)")
+            st.dataframe(worst_projects[[
+                'PROJECT_NAME', 'BUSINESS_ALLOCATION', 'TOTAL_2025_FORECASTS',
+                'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+            ]].style.format({
+                'BUSINESS_ALLOCATION': "${:,.2f}",
+                f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
+                'CAPITAL_VARIANCE': "{:,.2f}",
+                'Absolute_Capital_VARIANCE': "{:,.2f}"
+            }), use_container_width=True, hide_index=True)
+        else:
+            st.info("Column 'CAPITAL_VARIANCE' not found for Project Performance analysis. Ensure 'BUSINESS_ALLOCATION' and current year forecasts are available.")
+
+
+        st.markdown("---")
+
+        # --- Report Generation Feature ---
+        st.subheader("Generate Professional Report")
         st.markdown("Click the button below to generate a comprehensive HTML report of the current dashboard view.")
 
-        # Function to generate the HTML report content
+        # Function to generate the HTML report content (updated to include new metrics and tables)
         def generate_html_report(
             filtered_df: pd.DataFrame,
             total_business_allocation: float,
             total_current_eac: float,
             total_actuals_to_date: float,
             total_projects: int,
+            sum_actual_spend_ytd: float,
+            forecasted_spend_next_month: float,
+            total_capital_plan_sum: float,
+            run_rate_per_month: float,
+            capital_underspend: float,
+            capital_overspend: float,
+            net_reallocation_amount: float,
             monthly_combined_df: pd.DataFrame | None,
             fig_monthly_trends: px.graph_objects.Figure | None,
             fig_qe_variance: px.graph_objects.Figure | None,
@@ -485,12 +657,40 @@ if uploaded_file is not None:
                         <div class="metric-label">Number of Projects</div>
                         <div class="metric-value">{total_projects}</div>
                     </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Sum Actual Spend (YTD)</div>
+                        <div class="metric-value">${sum_actual_spend_ytd:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Forecasted Spend Next Month</div>
+                        <div class="metric-value">${forecasted_spend_next_month:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Total Capital Plan</div>
+                        <div class="metric-value">${total_capital_plan_sum:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Average Run Rate / Month</div>
+                        <div class="metric-value">${run_rate_per_month:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Total Potential Underspend</div>
+                        <div class="metric-value">${capital_underspend:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Total Potential Overspend</div>
+                        <div class="metric-value">${capital_overspend:,.2f}</div>
+                    </div>
+                     <div class="metric-box">
+                        <div class="metric-label">Net Reallocation Amount</div>
+                        <div class="metric-value">${net_reallocation_amount:,.2f}</div>
+                    </div>
                 </div>
 
                 <h2 class="section-title">Filtered Project Details</h2>
                 {filtered_df[project_table_cols_present].style.format(financial_format_map).to_html(index=False)}
 
-                <h2 class="section-title">2025 Monthly Spend Trends</h2>
+                <h2 class="section-title">{datetime.now().year} Monthly Spend Trends</h2>
                 <div class="chart-container">
                     {fig_monthly_trends.to_html(full_html=False, include_plotlyjs='cdn') if fig_monthly_trends else '<p>No monthly trend data available.</p>'}
                 </div>
@@ -522,16 +722,16 @@ if uploaded_file is not None:
             # Add detailed project financials if a project is selected
             if selected_project_name != 'Select a Project' and project_details is not None and fig_project_monthly is not None:
                 # Re-create monthly breakdown DF for report to ensure it has correct formatting
-                monthly_breakdown_data_html = {'Month': [f"2025_{i:02d}" for i in range(1, 13)]}
+                monthly_breakdown_data_html = {'Month': [f"{current_year_str}_{i:02d}" for i in range(1, 13)]}
                 for suffix, display_name in monthly_types.items():
-                    col_prefix = '2025_'
+                    col_prefix = f'{current_year_str}_'
                     monthly_values_html = []
                     for i in range(1, 13):
                         col_name_full_html = f"{col_prefix}{i:02d}{suffix}"
                         monthly_values_html.append(project_details.get(col_name_full_html, 0))
                     monthly_breakdown_data_html[display_name] = monthly_values_html
 
-                monthly_breakdown_df_html = pd.DataFrame(monthly_breakdown_data_html).style.format(monthly_format_map).to_html(index=False)
+                monthly_breakdown_df_html = pd.DataFrame(monthly_breakdown_data_html).style.format(monthly_format_map_details).to_html(index=False)
 
                 report_html_content += f"""
                 <h2 class="section-title">Detailed Financials for {selected_project_name}</h2>
@@ -549,7 +749,7 @@ if uploaded_file is not None:
                         <div class="metric-value">${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}</div>
                     </div>
                 </div>
-                <h3>2025 Monthly Breakdown:</h3>
+                <h3>{current_year_str} Monthly Breakdown:</h3>
                 {monthly_breakdown_df_html}
                 <div class="chart-container">
                     {fig_project_monthly.to_html(full_html=False, include_plotlyjs='cdn')}
@@ -560,6 +760,79 @@ if uploaded_file is not None:
                 <h2 class="section-title">Detailed Project Financials</h2>
                 <p>No project selected for detailed view in the report.</p>
                 """
+
+            # Add Project Manager Performance to report
+            pm_report_html = ""
+            if 'PROJECT_MANAGER' in filtered_df.columns and f'TOTAL_{current_year}_FORECASTS' in filtered_df.columns and f'TOTAL_{current_year}_CAPITAL_PLAN' in filtered_df.columns:
+                pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
+                    Total_Forecast_Spend=(f'TOTAL_{current_year}_FORECASTS', 'sum'),
+                    Total_Capital_Plan=(f'TOTAL_{current_year}_CAPITAL_PLAN', 'sum'),
+                    Total_Actual_Spend=(f'TOTAL_{current_year}_ACTUALS', 'sum')
+                ).reset_index()
+                pm_performance['Forecast_vs_Plan_Variance'] = pm_performance['Total_Forecast_Spend'] - pm_performance['Total_Capital_Plan']
+                pm_performance['Actual_vs_Forecast_Variance'] = pm_performance['Total_Actual_Spend'] - pm_performance['Total_Forecast_Spend']
+                pm_performance['Combined_Variance_Score'] = pm_performance['Forecast_vs_Plan_Variance'].abs() + pm_performance['Actual_vs_Forecast_Variance'].abs()
+                
+                pm_performance_sorted = pm_performance.sort_values('Combined_Variance_Score')
+                
+                pm_report_html += "<h3>Top 5 Project Managers (Closest to Plans/Forecasts)</h3>"
+                pm_report_html += pm_performance_sorted.head(5).style.format({
+                    'Total_Forecast_Spend': "${:,.2f}", 'Total_Capital_Plan': "${:,.2f}",
+                    'Total_Actual_Spend': "${:,.2f}", 'Forecast_vs_Plan_Variance': "{:,.2f}",
+                    'Actual_vs_Forecast_Variance': "{:,.2f}", 'Combined_Variance_Score': "{:,.2f}"
+                }).to_html(index=False)
+
+                pm_report_html += "<h3>Bottom 5 Project Managers (Furthest from Plans/Forecasts)</h3>"
+                pm_report_html += pm_performance_sorted.tail(5).sort_values('Combined_Variance_Score', ascending=False).style.format({
+                    'Total_Forecast_Spend': "${:,.2f}", 'Total_Capital_Plan': "${:,.2f}",
+                    'Total_Actual_Spend': "${:,.2f}", 'Forecast_vs_Plan_Variance': "{:,.2f}",
+                    'Actual_vs_Forecast_Variance': "{:,.2f}", 'Combined_Variance_Score': "{:,.2f}"
+                }).to_html(index=False)
+            else:
+                pm_report_html += "<p>Required columns for Project Manager Performance not found.</p>"
+            
+            report_html_content += f"""
+            <h2 class="section-title">Project Manager Performance</h2>
+            {pm_report_html}
+            """
+
+            # Add Project Performance to report
+            project_perf_report_html = ""
+            if 'CAPITAL_VARIANCE' in filtered_df.columns:
+                project_performance = filtered_df.copy()
+                project_performance['Absolute_Capital_Variance'] = project_performance['CAPITAL_VARIANCE'].abs()
+
+                best_projects = project_performance.sort_values('Absolute_Capital_Variance').head(5)
+                worst_projects = project_performance.sort_values('Absolute_Capital_Variance', ascending=False).head(5)
+
+                project_perf_report_html += "<h3>Top 5 Best Behaving Projects (Closest to Business Allocation)</h3>"
+                project_perf_report_html += best_projects[[
+                    'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
+                    'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+                ]].style.format({
+                    'BUSINESS_ALLOCATION': "${:,.2f}",
+                    f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
+                    'CAPITAL_VARIANCE': "{:,.2f}",
+                    'Absolute_Capital_Variance': "{:,.2f}"
+                }).to_html(index=False)
+
+                project_perf_report_html += "<h3>Bottom 5 Worst Behaving Projects (Furthest from Business Allocation)</h3>"
+                project_perf_report_html += worst_projects[[
+                    'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
+                    'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+                ]].style.format({
+                    'BUSINESS_ALLOCATION': "${:,.2f}",
+                    f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
+                    'CAPITAL_VARIANCE': "{:,.2f}",
+                    'Absolute_Capital_Variance': "{:,.2f}"
+                }).to_html(index=False)
+            else:
+                project_perf_report_html += "<p>Required columns for Project Performance analysis not found.</p>"
+
+            report_html_content += f"""
+            <h2 class="section-title">Project Performance</h2>
+            {project_perf_report_html}
+            """
 
 
             report_html_content += """
@@ -572,12 +845,24 @@ if uploaded_file is not None:
             return report_html_content
 
         if st.button("Generate Report (HTML)"):
-            # Pass all necessary variables to the report generation function
+            # Prepare data for report generation
+            current_year_str = str(datetime.now().year)
+            current_month_num = datetime.now().month
+
+            # Ensure monthly_combined_df is passed correctly for the report if it was generated
+            report_monthly_combined_df = monthly_combined_df if 'monthly_combined_df' in locals() and not monthly_combined_df.empty else None
+
+            # Ensure `project_details` is initialized for the report correctly if no project was selected
+            report_project_details = project_details if selected_project_name != 'Select a Project' else None
+            report_fig_project_monthly = fig_project_monthly if selected_project_name != 'Select a Project' else None
+
             report_content = generate_html_report(
                 filtered_df, total_business_allocation, total_current_eac, total_actuals_to_date, total_projects,
-                monthly_combined_df, fig_monthly_trends, fig_qe_variance, fig_ba_variance,
+                sum_actual_spend_ytd, forecasted_spend_next_month, total_capital_plan_sum,
+                run_rate_per_month, capital_underspend, capital_overspend, net_reallocation_amount,
+                report_monthly_combined_df, fig_monthly_trends, fig_qe_variance, fig_ba_variance,
                 fig_portfolio_alloc, fig_sub_portfolio_alloc, fig_brs_alloc,
-                selected_project_name, project_details, fig_project_monthly
+                selected_project_name, report_project_details, report_fig_project_monthly
             )
 
             st.download_button(
@@ -595,7 +880,7 @@ else:
 
 ---
 
-## View Application Source Code
+# View Application Source Code
 
 with st.expander("View Application Source Code"):
     source_code = inspect.getsource(inspect.currentframe())

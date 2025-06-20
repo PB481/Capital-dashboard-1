@@ -1,324 +1,602 @@
 import streamlit as st
 import pandas as pd
-from pathlib import Path
-import datetime
-import altair as alt # Import Altair for chart generation in HTML report
+import plotly.express as px
+import io
+import inspect
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='Capital and Budget Monitoring Tool',
-    page_icon=':chart_with_upwards_trend:',
-    layout='wide' # Use wide layout for better display
-)
+# Set page configuration for a wider layout
+st.set_page_config(layout="wide", page_title="Capital Project Portfolio Dashboard")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
+# --- Data Loading and Cleaning ---
 @st.cache_data
-def load_project_data(uploaded_file):
-    """Loads project data from an uploaded CSV file.
-
-    Assumes the CSV has columns: 'Project Name', 'Date', 'Budget', 'Actual Spend'.
-    The 'Date' column will be converted to datetime objects.
+def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     """
-    if uploaded_file is not None:
+    Loads and preprocesses the CSV data for the Capital Project Portfolio Dashboard.
+
+    Args:
+        uploaded_file (io.BytesIO): The uploaded CSV file.
+
+    Returns:
+        pd.DataFrame: A cleaned and preprocessed DataFrame, or an empty DataFrame if an error occurs.
+    """
+    try:
         df = pd.read_csv(uploaded_file)
-        # Ensure essential columns exist
-        required_columns = ['Project Name', 'Date', 'Budget', 'Actual Spend']
-        if not all(col in df.columns for col in required_columns):
-            st.error(f"The uploaded CSV must contain the following columns: {', '.join(required_columns)}")
-            return pd.DataFrame() # Return an empty DataFrame if columns are missing
+    except Exception as e:
+        st.error(f"Error loading file: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
 
-        df['Date'] = pd.to_datetime(df['Date'])
-        return df
-    return pd.DataFrame() # Return an empty DataFrame if no file is uploaded
+    # 1. Clean Column Names
+    # A helper function to clean individual column names
+    def clean_col_name(col_name: str) -> str:
+        """Cleans a single column name."""
+        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '').replace('-', '_')
+        # Replace multiple underscores with a single underscore
+        col_name = '_'.join(filter(None, col_name.split('_')))
+        col_name = col_name.upper()
 
-def generate_html_report(filtered_df, summary_df, chart_object_deviation, chart_object_tracking, from_date, to_date):
-    """Generates an HTML report string from the app's data and visualizations."""
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Capital and Budget Report ({from_date.strftime('%Y-%m-%d')} to {to_date.strftime('%Y-%m-%d')})</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            h1, h2, h3 {{ color: #333; }}
-            table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-            th {{ background-color: #f2f2f2; }}
-            .red-text {{ color: red; font-weight: bold; }}
-            .green-text {{ color: green; font-weight: bold; }}
-            .chart-container {{ width: 100%; overflow-x: auto; }}
-        </style>
-        <script src="https://cdn.jsdelivr.net/npm/vega@{alt.VEGA_VERSION}" charset="utf-8"></script>
-        <script src="https://cdn.jsdelivr.net/npm/vega-lite@{alt.VEGALITE_VERSION}" charset="utf-8"></script>
-        <script src="https://cdn.jsdelivr.net/npm/vega-embed@{alt.VEGAEMBED_VERSION}" charset="utf-8"></script>
-    </head>
-    <body>
-        <h1>Capital and Budget Monitoring Report</h1>
-        <p>Report generated on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        <p>Date Range: {from_date.strftime('%Y-%m-%d')} to {to_date.strftime('%Y-%m-%d')}</p>
+        # Specific corrections for common typos/inconsistencies
+        corrections = {
+            'PROJEC_TID': 'PROJECT_ID',
+            'INI_MATIVE_PROGRAM': 'INITIATIVE_PROGRAM',
+            'ALL_PRIOR_YEARS_A': 'ALL_PRIOR_YEARS_ACTUALS',
+            'C_URRENT_EAC': 'CURRENT_EAC',
+            'QE_RUN_RATE': 'QE_RUN_RATE', # Ensure consistency
+            'RATE_1': 'RATE_SUPPLEMENTARY' # Example of better naming for duplicate 'RATE'
+        }
+        return corrections.get(col_name, col_name)
 
-        <h2>1. Filtered Project Data</h2>
-        {filtered_df.to_html(index=False)}
+    # Apply column name cleaning
+    df.columns = [clean_col_name(col) for col in df.columns]
 
-        <h2>2. Budget vs Actual Spend Deviation Over Time</h2>
-        <div id="chart_deviation" class="chart-container"></div>
-        <script type="text/javascript">
-            var spec_deviation = {chart_object_deviation.to_json(indent=None)};
-            vegaEmbed('#chart_deviation', spec_deviation, {{mode: "vega-lite"}}).catch(console.error);
-        </script>
+    # Handle duplicate column names by making them unique (e.g., Rate, Rate_1)
+    # This approach appends a number only if a duplicate truly exists
+    cols = []
+    seen = {}
+    for col in df.columns:
+        original_col = col
+        count = seen.get(col, 0)
+        if count > 0:
+            col = f"{col}_{count}"
+        cols.append(col)
+        seen[original_col] = count + 1
+    df.columns = cols
 
-        <h2>3. Budget and Actual Spend Tracking</h2>
-        <div id="chart_tracking" class="chart-container"></div>
-        <script type="text/javascript">
-            var spec_tracking = {chart_object_tracking.to_json(indent=None)};
-            vegaEmbed('#chart_tracking', spec_tracking, {{mode: "vega-lite"}}).catch(console.error);
-        </script>
+    # Identify financial columns that need numeric conversion
+    # Dynamically find columns that look like financial data (e.g., end with _A, _F, _CP or are specific financial metrics)
+    financial_pattern = r'^(20\d{2}_\d{2}_[AFCPL]|ALL_PRIOR_YEARS_ACTUALS|BUSINESS_ALLOCATION|CURRENT_EAC|QE_FORECAST_VS_QE_PLAN|FORECAST_VS_BA|YE_RUN|RATE|QE_RUN|RATE_SUPPLEMENTARY)$'
+    financial_cols_to_convert = [col for col in df.columns if pd.Series([col]).str.contains(financial_pattern, regex=True).any()]
 
-        <h2>4. Project Performance Summary</h2>
-        {summary_df.to_html(index=False, float_format='%.2f')}
+    # Convert identified financial columns to numeric, handling commas, spaces, and errors
+    for col in financial_cols_to_convert:
+        if col in df.columns: # Ensure column exists after cleaning
+            df[col] = df[col].astype(str).str.replace(',', '').str.strip().replace('', '0')
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-        <h3>Projects over 10% or under -10% of budget:</h3>
-        <ul>
-    """
+    # Identify monthly columns for 2025 (or any year starting with '20' followed by two digits)
+    monthly_actuals_cols = [col for col in df.columns if col.startswith('20') and col.endswith('_A')]
+    monthly_forecasts_cols = [col for col in df.columns if col.startswith('20') and col.endswith('_F')]
+    monthly_plan_cols = [col for col in df.columns if col.startswith('20') and col.endswith('_CP')]
 
-    highlighted_projects = summary_df[
-        (summary_df['Percentage_Deviation'] > 10) | (summary_df['Percentage_Deviation'] < -10)
-    ]
+    # Ensure all identified monthly columns are numeric (redundant with previous step but good for safety)
+    for col_list in [monthly_actuals_cols, monthly_forecasts_cols, monthly_plan_cols]:
+        for col in col_list:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    if not highlighted_projects.empty:
-        for index, row in highlighted_projects.iterrows():
-            project_name = row['Project Name']
-            deviation = row['Percentage_Deviation']
-            total_budget = row['Total_Budget']
-            total_actual = row['Total_Actual']
+    # Calculate total 2025 Actuals, Forecasts, and Plans
+    df['TOTAL_2025_ACTUALS'] = df[monthly_actuals_cols].sum(axis=1) if monthly_actuals_cols else 0
+    df['TOTAL_2025_FORECASTS'] = df[monthly_forecasts_cols].sum(axis=1) if monthly_forecasts_cols else 0
+    df['TOTAL_2025_CAPITAL_PLAN'] = df[monthly_plan_cols].sum(axis=1) if monthly_plan_cols else 0
 
-            if deviation > 10:
-                html_content += f"""
-                <li><span class="red-text">{project_name}</span>: Actual Spend: ${total_actual:,.2f} (Over budget by {deviation:.2f}%)</li>
-                """
-            elif deviation < -10:
-                html_content += f"""
-                <li><span class="green-text">{project_name}</span>: Actual Spend: ${total_actual:,.2f} (Under budget by {abs(deviation):.2f}%)</li>
-                """
+    # Calculate Total Actuals to Date (Prior Years + 2025 Actuals)
+    # Check if 'ALL_PRIOR_YEARS_ACTUALS' exists before summing
+    if 'ALL_PRIOR_YEARS_ACTUALS' in df.columns:
+        df['TOTAL_ACTUALS_TO_DATE'] = df['ALL_PRIOR_YEARS_ACTUALS'] + df['TOTAL_2025_ACTUALS']
     else:
-        html_content += "<li>No projects are currently over or under 10% of their budget for the selected period.</li>"
+        df['TOTAL_ACTUALS_TO_DATE'] = df['TOTAL_2025_ACTUALS']
+        st.warning("Column 'ALL_PRIOR_YEARS_ACTUALS' not found. 'TOTAL_ACTUALS_TO_DATE' only includes 2025 actuals.")
 
-    html_content += """
-        </ul>
-    </body>
-    </html>
-    """
-    return html_content
+    return df
 
+---
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+# Streamlit Application
 
-st.title(':chart_with_upwards_trend: Capital and Budget Monitoring Tool')
+st.title("💰 Capital Project Portfolio Dashboard")
+st.markdown("""
+    This dashboard provides an interactive overview of your capital projects, allowing you to track financials,
+    monitor trends, and identify variances.
+""")
 
-st.markdown("Upload your project budget and actual spend data to visualize and monitor your projects.")
+uploaded_file = st.file_uploader("Upload your Capital Project CSV file", type=["csv"])
 
-''
-''
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
 
-uploaded_file = st.file_uploader("Upload your project data CSV", type=["csv"])
+    if not df.empty:
+        # --- Sidebar Filters ---
+        st.sidebar.header("Filter Projects")
 
-project_df = load_project_data(uploaded_file)
+        # Define filter columns and their display names
+        filter_columns = {
+            "PORTFOLIO_OBS_LEVEL1": "Select Portfolio Level",
+            "SUB_PORTFOLIO_OBS_LEVEL2": "Select Sub-Portfolio Level",
+            "PROJECT_MANAGER": "Select Project Manager",
+            "BRS_CLASSIFICATION": "Select BRS Classification"
+        }
 
-if not project_df.empty:
-    min_date_pd = project_df['Date'].min()
-    max_date_pd = project_df['Date'].max()
-
-    min_date = min_date_pd.date()
-    max_date = max_date_pd.date()
-
-    from_date, to_date = st.slider(
-        'Select the date range:',
-        min_value=min_date,
-        max_value=max_date,
-        value=[min_date, max_date],
-        format="YYYY-MM-DD"
-    )
-
-    projects = project_df['Project Name'].unique()
-
-    if not len(projects):
-        st.warning("No projects found in the uploaded data.")
-    else:
-        selected_projects = st.multiselect(
-            'Which projects would you like to view?',
-            projects,
-            projects
-        )
-
-        ''
-        ''
-        ''
-
-        filtered_project_df = project_df[
-            (project_df['Project Name'].isin(selected_projects))
-            & (project_df['Date'].dt.date >= from_date)
-            & (project_df['Date'].dt.date <= to_date)
-        ].copy() # Use .copy() to avoid SettingWithCopyWarning
-
-        # --- First Chart: Budget vs Actual Spend DEVIATION ---
-        st.header('Budget vs Actual Spend Deviation Over Time', divider='gray')
-
-        if filtered_project_df.empty:
-            st.info("No data available for the selected projects and date range. Please adjust your selections or upload more data.")
-            chart_for_report_deviation = None # No chart if no data
-            chart_for_report_tracking = None # No chart if no data
-            summary_df = pd.DataFrame() # Empty summary
-        else:
-            # Calculate the deviation and create the combined label
-            chart_df_deviation = filtered_project_df.copy() # Start with the full filtered df
-            chart_df_deviation['Deviation'] = chart_df_deviation['Actual Spend'] - chart_df_deviation['Budget']
-            chart_df_deviation['Project_Date_Label'] = chart_df_deviation['Project Name'] + ' - ' + chart_df_deviation['Date'].dt.strftime('%Y-%m-%d')
-
-            # Create Altair chart for both display and report
-            chart_deviation = alt.Chart(chart_df_deviation).mark_bar().encode(
-                x=alt.X('Project_Date_Label:N', sort=None, title='Project - Date'),
-                y=alt.Y('Deviation:Q', title='Amount (Actual - Budget)', axis=alt.Axis(format='$,.2f')),
-                color=alt.condition(
-                    alt.datum.Deviation > 0,
-                    alt.value('red'),  # Over budget
-                    alt.value('green') # Under budget
-                ),
-                tooltip=[
-                    'Project Name',
-                    alt.Tooltip('yearmonthdate(Date)', title='Date'),
-                    alt.Tooltip('Budget', format='$,.2f'),
-                    alt.Tooltip('Actual Spend', format='$,.2f'),
-                    alt.Tooltip('Deviation', format='$,.2f', title='Deviation')
-                ]
-            ).properties(
-                title='Budget vs Actual Spend Deviation by Project and Date'
-            ).interactive()
-
-            st.altair_chart(chart_deviation, use_container_width=True)
-            chart_for_report_deviation = chart_deviation # Assign chart object for report generation
-
-            # --- New Chart: Budget and Actual Spend Tracking ---
-            st.header('Budget and Actual Spend Tracking', divider='gray')
-
-            # Prepare data for the new line chart
-            # Melt the DataFrame to have 'Budget' and 'Actual Spend' as categories in a 'Type' column
-            # This is necessary to plot them as separate lines.
-            chart_df_tracking = filtered_project_df.melt(
-                id_vars=['Project Name', 'Date'],
-                value_vars=['Budget', 'Actual Spend'],
-                var_name='Type',
-                value_name='Amount'
-            )
-            # Create a combined 'Project_Date_Label' for the x-axis
-            chart_df_tracking['Project_Date_Label'] = chart_df_tracking['Project Name'] + ' - ' + chart_df_tracking['Date'].dt.strftime('%Y-%m-%d')
-
-            # Create the line chart
-            chart_tracking = alt.Chart(chart_df_tracking).mark_line(point=True).encode(
-                x=alt.X('Project_Date_Label:N', sort=None, title='Project - Date'),
-                y=alt.Y('Amount:Q', title='Amount', axis=alt.Axis(format='$,.2f')),
-                color=alt.Color('Type:N', title='Spend Type', legend=alt.Legend(orient="bottom")),
-                tooltip=[
-                    'Project Name',
-                    alt.Tooltip('yearmonthdate(Date)', title='Date'),
-                    alt.Tooltip('Type', title='Spend Type'),
-                    alt.Tooltip('Amount', format='$,.2f')
-                ]
-            ).properties(
-                title='Budget and Actual Spend Tracking by Project and Date'
-            ).interactive()
-
-            st.altair_chart(chart_tracking, use_container_width=True)
-            chart_for_report_tracking = chart_tracking # Assign chart object for report generation
-
-
-            st.header('Project Performance Summary', divider='gray')
-
-            summary_df = filtered_project_df.groupby('Project Name').agg(
-                Total_Budget=('Budget', 'sum'),
-                Total_Actual=('Actual Spend', 'sum')
-            ).reset_index()
-
-            summary_df['Percentage_Deviation'] = summary_df.apply(
-                lambda row: ((row['Total_Actual'] - row['Total_Budget']) / row['Total_Budget']) * 100
-                if row['Total_Budget'] != 0 else float('inf') if row['Total_Actual'] > 0 else 0,
-                axis=1
-            )
-
-            st.write("Projects that are **over 10%** or **under -10%** of budget:")
-
-            highlighted_projects = summary_df[
-                (summary_df['Percentage_Deviation'] > 10) | (summary_df['Percentage_Deviation'] < -10)
-            ]
-
-            if not highlighted_projects.empty:
-                for index, row in highlighted_projects.iterrows():
-                    project_name = row['Project Name']
-                    deviation = row['Percentage_Deviation']
-                    total_budget = row['Total_Budget']
-                    total_actual = row['Total_Actual']
-
-                    if deviation > 10:
-                        st.markdown(
-                            f"<p style='color:red;'>**{project_name}**: Actual Spend: ${total_actual:,.2f} (Over budget by {deviation:.2f}%)</p>",
-                            unsafe_allow_html=True
-                        )
-                    elif deviation < -10:
-                        st.markdown(
-                            f"<p style='color:green;'>**{project_name}**: Actual Spend: ${total_actual:,.2f} (Under budget by {abs(deviation):.2f}%)</p>",
-                            unsafe_allow_html=True
-                        )
+        selected_filters = {}
+        for col_name, display_name in filter_columns.items():
+            if col_name in df.columns:
+                options = ['All'] + df[col_name].dropna().unique().tolist()
+                selected_filters[col_name] = st.sidebar.selectbox(display_name, options)
             else:
-                st.info("No projects are currently over or under 10% of their budget for the selected period.")
+                st.sidebar.info(f"Column '{col_name}' not found for filtering.")
+                selected_filters[col_name] = 'All' # Set to 'All' if column is missing
 
-        # --- Download Buttons ---
-        st.markdown("---")
-        st.header('Download Data & Report', divider='gray')
+        # Apply filters
+        filtered_df = df.copy()
+        for col_name, selected_value in selected_filters.items():
+            if selected_value != 'All' and col_name in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df[col_name] == selected_value]
 
-        col1, col2 = st.columns(2)
+        # Handle case where filtering results in an empty DataFrame
+        if filtered_df.empty:
+            st.warning("No projects match the selected filters. Please adjust your selections.")
+            st.stop() # Stop execution if no data is left after filtering
 
+        ---
+
+        ## Key Metrics Overview
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        # Use .get() with a default value for robustness in case columns are missing
+        # though load_data should ensure their existence.
         with col1:
-            # Download filtered data
-            csv_data = filtered_project_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Filtered Data as CSV",
-                data=csv_data,
-                file_name="filtered_project_data.csv",
-                mime="text/csv",
-                help="Download the data currently displayed in the tables above."
+            total_business_allocation = filtered_df['BUSINESS_ALLOCATION'].sum() if 'BUSINESS_ALLOCATION' in filtered_df.columns else 0
+            st.metric(label="Total Business Allocation", value=f"${total_business_allocation:,.2f}")
+        with col2:
+            total_current_eac = filtered_df['CURRENT_EAC'].sum() if 'CURRENT_EAC' in filtered_df.columns else 0
+            st.metric(label="Total Current EAC", value=f"${total_current_eac:,.2f}")
+        with col3:
+            total_actuals_to_date = filtered_df['TOTAL_ACTUALS_TO_DATE'].sum() if 'TOTAL_ACTUALS_TO_DATE' in filtered_df.columns else 0
+            st.metric(label="Total Actuals To Date", value=f"${total_actuals_to_date:,.2f}")
+        with col4:
+            total_projects = len(filtered_df)
+            st.metric(label="Number of Projects", value=total_projects)
+
+        ---
+
+        ## Project Details
+
+        # Define columns to display in the project details table
+        project_table_cols = [
+            'PORTFOLIO_OBS_LEVEL1', 'SUB_PORTFOLIO_OBS_LEVEL2', 'MASTER_PROJECT_ID',
+            'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION',
+            'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
+            'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN',
+            'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA'
+        ]
+        # Filter to only include columns that actually exist in the filtered_df
+        project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
+
+        # Define formatting for financial columns in the table
+        financial_format_map = {
+            col: "${:,.2f}" for col in project_table_cols_present if col in [
+                'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
+                'TOTAL_2025_ACTUALS', 'TOTAL_2025_FORECASTS', 'TOTAL_2025_CAPITAL_PLAN'
+            ]
+        }
+        # Add specific formats for variance columns if present
+        if 'QE_FORECAST_VS_QE_PLAN' in project_table_cols_present:
+            financial_format_map['QE_FORECAST_VS_QE_PLAN'] = "{:,.2f}"
+        if 'FORECAST_VS_BA' in project_table_cols_present:
+            financial_format_map['FORECAST_VS_BA'] = "{:,.2f}"
+
+        project_details_table = filtered_df[project_table_cols_present].style.format(financial_format_map)
+        st.dataframe(project_details_table, use_container_width=True, hide_index=True)
+
+        ---
+
+        ## 2025 Monthly Spend Trends
+
+        # Dynamically get monthly columns that exist in the filtered DataFrame
+        monthly_actuals_cols_filtered = [col for col in filtered_df.columns if col.startswith('2025_') and col.endswith('_A')]
+        monthly_forecasts_cols_filtered = [col for col in filtered_df.columns if col.startswith('2025_') and col.endswith('_F')]
+        monthly_plan_cols_filtered = [col for col in filtered_df.columns if col.startswith('2025_') and col.endswith('_CP')]
+
+        monthly_combined_df = pd.DataFrame()
+        if monthly_actuals_cols_filtered or monthly_forecasts_cols_filtered or monthly_plan_cols_filtered:
+            # Create data for plotting
+            data_to_concat = []
+            if monthly_actuals_cols_filtered:
+                monthly_data_actuals = filtered_df[monthly_actuals_cols_filtered].sum().reset_index()
+                monthly_data_actuals.columns = ['Month', 'Amount']
+                monthly_data_actuals['Type'] = 'Actuals'
+                data_to_concat.append(monthly_data_actuals)
+
+            if monthly_forecasts_cols_filtered:
+                monthly_data_forecasts = filtered_df[monthly_forecasts_cols_filtered].sum().reset_index()
+                monthly_data_forecasts.columns = ['Month', 'Amount']
+                monthly_data_forecasts['Type'] = 'Forecasts'
+                data_to_concat.append(monthly_data_forecasts)
+
+            if monthly_plan_cols_filtered:
+                monthly_data_plan = filtered_df[monthly_plan_cols_filtered].sum().reset_index()
+                monthly_data_plan.columns = ['Month', 'Amount']
+                monthly_data_plan['Type'] = 'Capital Plan'
+                data_to_concat.append(monthly_data_plan)
+
+            if data_to_concat:
+                monthly_combined_df = pd.concat(data_to_concat)
+
+                # Ensure month order for plotting
+                month_order = [f'2025_{i:02d}' for i in range(1, 13)]
+                # Extract base month name (e.g., '2025_01' from '2025_01_A')
+                monthly_combined_df['Month_Sort'] = monthly_combined_df['Month'].apply(lambda x: '_'.join(x.split('_')[:2]))
+                monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month_Sort'], categories=month_order, ordered=True)
+                monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
+
+                fig_monthly_trends = px.line(
+                    monthly_combined_df,
+                    x='Month_Sort',
+                    y='Amount',
+                    color='Type',
+                    title='Monthly Capital Trends (Actuals, Forecasts, Plan)',
+                    labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
+                    line_shape='linear',
+                    markers=True
+                )
+                fig_monthly_trends.update_layout(hovermode="x unified", legend_title_text='Type')
+                fig_monthly_trends.update_xaxes(title_text="Month (2025)")
+                fig_monthly_trends.update_yaxes(title_text="Amount ($)")
+                st.plotly_chart(fig_monthly_trends, use_container_width=True)
+            else:
+                st.warning("No 2025 monthly actuals, forecasts, or plan data found for trend analysis after filtering.")
+                fig_monthly_trends = None # Explicitly set to None if no data
+        else:
+            st.info("No 2025 monthly actuals, forecasts, or plan columns found in the uploaded data for trend analysis.")
+            fig_monthly_trends = None # Explicitly set to None if no columns
+
+        ---
+
+        ## Variance Analysis
+
+        col_var1, col_var2 = st.columns(2)
+        fig_qe_variance = None
+        fig_ba_variance = None
+
+        if 'QE_FORECAST_VS_QE_PLAN' in filtered_df.columns and not filtered_df['QE_FORECAST_VS_QE_PLAN'].isnull().all():
+            with col_var1:
+                fig_qe_variance = px.bar(
+                    filtered_df,
+                    x='PROJECT_NAME',
+                    y='QE_FORECAST_VS_QE_PLAN',
+                    title='QE Forecast vs QE Plan Variance',
+                    labels={'QE_FORECAST_VS_QE_PLAN': 'Variance'},
+                    height=400
+                )
+                fig_qe_variance.update_layout(xaxis_title="Project Name", yaxis_title="Variance")
+                st.plotly_chart(fig_qe_variance, use_container_width=True)
+        else:
+            with col_var1:
+                st.info("Column 'QE_FORECAST_VS_QE_PLAN' not found or contains no data for variance analysis.")
+
+        if 'FORECAST_VS_BA' in filtered_df.columns and not filtered_df['FORECAST_VS_BA'].isnull().all():
+            with col_var2:
+                fig_ba_variance = px.bar(
+                    filtered_df,
+                    x='PROJECT_NAME',
+                    y='FORECAST_VS_BA',
+                    title='Forecast vs Business Allocation Variance',
+                    labels={'FORECAST_VS_BA': 'Variance'},
+                    height=400
+                )
+                fig_ba_variance.update_layout(xaxis_title="Project Name", yaxis_title="Variance")
+                st.plotly_chart(fig_ba_variance, use_container_width=True)
+        else:
+            with col_var2:
+                st.info("Column 'FORECAST_VS_BA' not found or contains no data for variance analysis.")
+
+        ---
+
+        ## Capital Allocation Breakdown
+
+        col_alloc1, col_alloc2, col_alloc3 = st.columns(3)
+        fig_portfolio_alloc = None
+        fig_sub_portfolio_alloc = None
+        fig_brs_alloc = None
+
+        if 'BUSINESS_ALLOCATION' in filtered_df.columns:
+            with col_alloc1:
+                if 'PORTFOLIO_OBS_LEVEL1' in filtered_df.columns and not filtered_df['PORTFOLIO_OBS_LEVEL1'].isnull().all():
+                    fig_portfolio_alloc = px.pie(
+                        filtered_df,
+                        names='PORTFOLIO_OBS_LEVEL1',
+                        values='BUSINESS_ALLOCATION',
+                        title='Allocation by Portfolio Level',
+                        hole=0.3
+                    )
+                    st.plotly_chart(fig_portfolio_alloc, use_container_width=True)
+                else:
+                    st.info("No 'PORTFOLIO_OBS_LEVEL1' data available for allocation.")
+
+            with col_alloc2:
+                if 'SUB_PORTFOLIO_OBS_LEVEL2' in filtered_df.columns and not filtered_df['SUB_PORTFOLIO_OBS_LEVEL2'].isnull().all():
+                    fig_sub_portfolio_alloc = px.pie(
+                        filtered_df,
+                        names='SUB_PORTFOLIO_OBS_LEVEL2',
+                        values='BUSINESS_ALLOCATION',
+                        title='Allocation by Sub-Portfolio Level',
+                        hole=0.3
+                    )
+                    st.plotly_chart(fig_sub_portfolio_alloc, use_container_width=True)
+                else:
+                    st.info("No 'SUB_PORTFOLIO_OBS_LEVEL2' data available for allocation.")
+
+            with col_alloc3:
+                if 'BRS_CLASSIFICATION' in filtered_df.columns and not filtered_df['BRS_CLASSIFICATION'].isnull().all():
+                    fig_brs_alloc = px.pie(
+                        filtered_df,
+                        names='BRS_CLASSIFICATION',
+                        values='BUSINESS_ALLOCATION',
+                        title='Allocation by BRS Classification',
+                        hole=0.3
+                    )
+                    st.plotly_chart(fig_brs_alloc, use_container_width=True)
+                else:
+                    st.info("No 'BRS_CLASSIFICATION' data available for allocation.")
+        else:
+            st.info("Column 'BUSINESS_ALLOCATION' not found for allocation breakdown.")
+
+        ---
+
+        ## Detailed Project Financials
+
+        project_names = ['Select a Project'] + filtered_df['PROJECT_NAME'].dropna().unique().tolist()
+        selected_project_name = st.selectbox("Select a project for detailed view:", project_names)
+
+        project_details = None # Initialize to None
+        fig_project_monthly = None # Initialize to None
+
+        if selected_project_name != 'Select a Project':
+            project_details = filtered_df[filtered_df['PROJECT_NAME'] == selected_project_name].iloc[0]
+
+            st.write(f"### Details for: {project_details['PROJECT_NAME']}")
+
+            # Display key financial metrics for the selected project
+            col_d1, col_d2, col_d3 = st.columns(3)
+            with col_d1:
+                st.metric(label="Business Allocation", value=f"${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}")
+            with col_d2:
+                st.metric(label="Current EAC", value=f"${project_details.get('CURRENT_EAC', 0):,.2f}")
+            with col_d3:
+                st.metric(label="All Prior Years Actuals", value=f"${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}")
+
+            st.write("#### 2025 Monthly Breakdown:")
+            # Generate monthly breakdown DataFrame dynamically based on available columns
+            monthly_breakdown_data = {'Month': [f"2025_{i:02d}" for i in range(1, 13)]}
+            monthly_types = {'_A': 'Actuals', '_F': 'Forecasts', '_CP': 'Capital Plan'}
+
+            for suffix, display_name in monthly_types.items():
+                col_prefix = '2025_'
+                monthly_values = []
+                for i in range(1, 13):
+                    col_name_full = f"{col_prefix}{i:02d}{suffix}"
+                    monthly_values.append(project_details.get(col_name_full, 0))
+                monthly_breakdown_data[display_name] = monthly_values
+
+            monthly_breakdown_df = pd.DataFrame(monthly_breakdown_data)
+
+            # Format the monthly breakdown table
+            monthly_format_map = {
+                'Actuals': "${:,.2f}",
+                'Forecasts': "${:,.2f}",
+                'Capital Plan': "${:,.2f}"
+            }
+            st.dataframe(monthly_breakdown_df.style.format(monthly_format_map), use_container_width=True, hide_index=True)
+
+            # Bar chart for monthly breakdown for the selected project
+            monthly_project_melted = monthly_breakdown_df.melt(id_vars=['Month'], var_name='Type', value_name='Amount')
+
+            fig_project_monthly = px.bar(
+                monthly_project_melted,
+                x='Month',
+                y='Amount',
+                color='Type',
+                barmode='group',
+                title=f'Monthly Financials for {selected_project_name}',
+                labels={'Amount': 'Amount ($)'}
+            )
+            st.plotly_chart(fig_project_monthly, use_container_width=True)
+
+        else:
+            st.info("Select a project from the dropdown to see its detailed monthly financials.")
+
+        ---
+
+        ## Generate Professional Report
+
+        st.markdown("Click the button below to generate a comprehensive HTML report of the current dashboard view.")
+
+        # Function to generate the HTML report content
+        def generate_html_report(
+            filtered_df: pd.DataFrame,
+            total_business_allocation: float,
+            total_current_eac: float,
+            total_actuals_to_date: float,
+            total_projects: int,
+            monthly_combined_df: pd.DataFrame | None,
+            fig_monthly_trends: px.graph_objects.Figure | None,
+            fig_qe_variance: px.graph_objects.Figure | None,
+            fig_ba_variance: px.graph_objects.Figure | None,
+            fig_portfolio_alloc: px.graph_objects.Figure | None,
+            fig_sub_portfolio_alloc: px.graph_objects.Figure | None,
+            fig_brs_alloc: px.graph_objects.Figure | None,
+            selected_project_name: str,
+            project_details: pd.Series | None,
+            fig_project_monthly: px.graph_objects.Figure | None
+        ) -> str:
+            """Generates a comprehensive HTML report of the dashboard state."""
+
+            # Base HTML structure and styling
+            report_html_content = f"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Capital Project Portfolio Report</title>
+                <style>
+                    body {{ font-family: sans-serif; line-height: 1.6; margin: 20px; color: #333; }}
+                    h1, h2, h3 {{ color: #004d40; }}
+                    .metric-container {{ display: flex; justify-content: space-around; flex-wrap: wrap; margin-bottom: 20px; }}
+                    .metric-box {{ border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin: 10px; flex: 1; min-width: 200px; text-align: center; background-color: #f9f9f9; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                    .metric-label {{ font-size: 0.9em; color: #555; }}
+                    .metric-value {{ font-size: 1.5em; font-weight: bold; color: #222; margin-top: 5px; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #e6f2f0; }}
+                    .chart-container {{ margin-top: 30px; border: 1px solid #eee; padding: 10px; border-radius: 8px; background-color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+                    .section-title {{ margin-top: 40px; border-bottom: 2px solid #004d40; padding-bottom: 10px; }}
+                    footer {{ text-align: center; margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee; font-size: 0.8em; color: #777; }}
+                </style>
+            </head>
+            <body>
+                <h1>Capital Project Portfolio Report</h1>
+                <p>Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+
+                <h2 class="section-title">Key Metrics Overview</h2>
+                <div class="metric-container">
+                    <div class="metric-box">
+                        <div class="metric-label">Total Business Allocation</div>
+                        <div class="metric-value">${total_business_allocation:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Total Current EAC</div>
+                        <div class="metric-value">${total_current_eac:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Total Actuals To Date</div>
+                        <div class="metric-value">${total_actuals_to_date:,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Number of Projects</div>
+                        <div class="metric-value">{total_projects}</div>
+                    </div>
+                </div>
+
+                <h2 class="section-title">Filtered Project Details</h2>
+                {filtered_df[project_table_cols_present].style.format(financial_format_map).to_html(index=False)}
+
+                <h2 class="section-title">2025 Monthly Spend Trends</h2>
+                <div class="chart-container">
+                    {fig_monthly_trends.to_html(full_html=False, include_plotlyjs='cdn') if fig_monthly_trends else '<p>No monthly trend data available.</p>'}
+                </div>
+
+                <h2 class="section-title">Variance Analysis</h2>
+                <div style="display: flex; justify-content: space-around; flex-wrap: wrap;">
+                    <div class="chart-container" style="flex: 1; min-width: 45%;">
+                        {fig_qe_variance.to_html(full_html=False, include_plotlyjs='cdn') if fig_qe_variance else '<p>No QE Forecast vs QE Plan Variance data available.</p>'}
+                    </div>
+                    <div class="chart-container" style="flex: 1; min-width: 45%;">
+                        {fig_ba_variance.to_html(full_html=False, include_plotlyjs='cdn') if fig_ba_variance else '<p>No Forecast vs Business Allocation Variance data available.</p>'}
+                    </div>
+                </div>
+
+                <h2 class="section-title">Capital Allocation Breakdown</h2>
+                <div style="display: flex; justify-content: space-around; flex-wrap: wrap;">
+                    <div class="chart-container" style="flex: 1; min-width: 30%;">
+                        {fig_portfolio_alloc.to_html(full_html=False, include_plotlyjs='cdn') if fig_portfolio_alloc else '<p>No Portfolio Level allocation data available.</p>'}
+                    </div>
+                    <div class="chart-container" style="flex: 1; min-width: 30%;">
+                        {fig_sub_portfolio_alloc.to_html(full_html=False, include_plotlyjs='cdn') if fig_sub_portfolio_alloc else '<p>No Sub-Portfolio Level allocation data available.</p>'}
+                    </div>
+                    <div class="chart-container" style="flex: 1; min-width: 30%;">
+                        {fig_brs_alloc.to_html(full_html=False, include_plotlyjs='cdn') if fig_brs_alloc else '<p>No BRS Classification allocation data available.</p>'}
+                    </div>
+                </div>
+            """
+
+            # Add detailed project financials if a project is selected
+            if selected_project_name != 'Select a Project' and project_details is not None and fig_project_monthly is not None:
+                # Re-create monthly breakdown DF for report to ensure it has correct formatting
+                monthly_breakdown_data_html = {'Month': [f"2025_{i:02d}" for i in range(1, 13)]}
+                for suffix, display_name in monthly_types.items():
+                    col_prefix = '2025_'
+                    monthly_values_html = []
+                    for i in range(1, 13):
+                        col_name_full_html = f"{col_prefix}{i:02d}{suffix}"
+                        monthly_values_html.append(project_details.get(col_name_full_html, 0))
+                    monthly_breakdown_data_html[display_name] = monthly_values_html
+
+                monthly_breakdown_df_html = pd.DataFrame(monthly_breakdown_data_html).style.format(monthly_format_map).to_html(index=False)
+
+                report_html_content += f"""
+                <h2 class="section-title">Detailed Financials for {selected_project_name}</h2>
+                <div class="metric-container">
+                    <div class="metric-box">
+                        <div class="metric-label">Business Allocation</div>
+                        <div class="metric-value">${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Current EAC</div>
+                        <div class="metric-value">${project_details.get('CURRENT_EAC', 0):,.2f}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">All Prior Years Actuals</div>
+                        <div class="metric-value">${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}</div>
+                    </div>
+                </div>
+                <h3>2025 Monthly Breakdown:</h3>
+                {monthly_breakdown_df_html}
+                <div class="chart-container">
+                    {fig_project_monthly.to_html(full_html=False, include_plotlyjs='cdn')}
+                </div>
+                """
+            else:
+                report_html_content += """
+                <h2 class="section-title">Detailed Project Financials</h2>
+                <p>No project selected for detailed view in the report.</p>
+                """
+
+
+            report_html_content += """
+                <footer>
+                    <p>Generated by Capital Project Portfolio Dashboard Streamlit App.</p>
+                </footer>
+            </body>
+            </html>
+            """
+            return report_html_content
+
+        if st.button("Generate Report (HTML)"):
+            # Pass all necessary variables to the report generation function
+            report_content = generate_html_report(
+                filtered_df, total_business_allocation, total_current_eac, total_actuals_to_date, total_projects,
+                monthly_combined_df, fig_monthly_trends, fig_qe_variance, fig_ba_variance,
+                fig_portfolio_alloc, fig_sub_portfolio_alloc, fig_brs_alloc,
+                selected_project_name, project_details, fig_project_monthly
             )
 
-        with col2:
-            if chart_for_report_deviation is not None and chart_for_report_tracking is not None and not filtered_project_df.empty:
-                html_report_content = generate_html_report(filtered_project_df, summary_df, chart_for_report_deviation, chart_for_report_tracking, from_date, to_date)
-                st.download_button(
-                    label="Generate HTML Report",
-                    data=html_report_content.encode('utf-8'),
-                    file_name=f"Capital_Budget_Report_{from_date.strftime('%Y%m%d')}_to_{to_date.strftime('%Y%m%d')}.html",
-                    mime="text/html",
-                    help="Generate a comprehensive HTML report of the selected data and charts."
-                )
-            else:
-                st.info("Upload data and select projects/dates to enable HTML report generation.")
+            st.download_button(
+                label="Download Report as HTML",
+                data=report_content,
+                file_name="capital_project_report.html",
+                mime="text/html"
+            )
+
+    else:
+        st.warning("Please upload a CSV file with valid data to proceed.")
 
 else:
-    st.info("Please upload a CSV file to get started.")
-    chart_for_report_deviation = None # No chart if no data
-    chart_for_report_tracking = None # No chart if no data
-    summary_df = pd.DataFrame() # Empty summary
+    st.info("Upload your Capital Project CSV file to get started!")
 
-# --- Feature: Show App Code ---
-st.markdown("---") # Add a separator
-st.header('App Source Code', divider='gray')
+---
 
-current_script_path = Path(__file__)
+## View Application Source Code
 
-try:
-    with open(current_script_path, 'r') as f:
-        app_code = f.read()
-    with st.expander("Click to view the Python code for this app"):
-        st.code(app_code, language='python')
-except Exception as e:
-    st.error(f"Could not load app source code: {e}")
+with st.expander("View Application Source Code"):
+    source_code = inspect.getsource(inspect.currentframe())
+    st.code(source_code, language='python')

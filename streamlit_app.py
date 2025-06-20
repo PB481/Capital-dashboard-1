@@ -5,6 +5,10 @@ import io
 import inspect
 from datetime import datetime
 
+# Identify monthly columns for calculations, being flexible with the year
+current_year = datetime.now().year
+current_month = datetime.now().month
+
 # Set page configuration for a wider layout
 st.set_page_config(layout="wide", page_title="Capital Project Portfolio Dashboard")
 
@@ -73,9 +77,6 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.replace(',', '').str.strip().replace('', '0')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Identify monthly columns for calculations, being flexible with the year
-    current_year = datetime.now().year
-    current_month = datetime.now().month
 
     monthly_actuals_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_A')]
     monthly_forecasts_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_F')]

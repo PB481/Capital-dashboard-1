@@ -5,10 +5,12 @@ import io
 import plotly.graph_objects as go
 import inspect
 from datetime import datetime
+import re # <-- NEW: Import the re module for regular expressions
 
-# Identify monthly columns for calculations, being flexible with the year
+# Define current_year and current_month globally (important for broad accessibility)
 current_year = datetime.now().year
 current_month = datetime.now().month
+current_year_str = str(current_year) # String version of year for f-strings
 
 # Set page configuration for a wider layout
 st.set_page_config(layout="wide", page_title="Capital Project Portfolio Dashboard")
@@ -35,7 +37,9 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     # A helper function to clean individual column names
     def clean_col_name(col_name: str) -> str:
         """Cleans a single column name."""
-        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '-').replace('-', '_') # Keep '.' for month formats, replace with '-' temporarily
+        # Replace problematic characters, but ensure '.' is handled for numerical parts if it appears.
+        # Keeping '-' as '_' is also fine here.
+        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '_').replace('-', '_')
         # Replace multiple underscores with a single underscore
         col_name = '_'.join(filter(None, col_name.split('_')))
         col_name = col_name.upper()
@@ -78,12 +82,31 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.replace(',', '').str.strip().replace('', '0')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+    # --- NEW: Refined identification of monthly columns using a strict regex pattern ---
+    # This pattern ensures the format is YEAR_MM_TYPE (e.g., 2025_01_A, 2025_12_CP)
+    # \d{{2}} ensures the month part is exactly two digits.
+    # We use current_year from the global scope.
+    monthly_col_pattern = re.compile(rf'^{current_year}_\d{{2}}_([AF]|CP)$')
 
-    monthly_actuals_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_A')]
-    monthly_forecasts_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_F')]
-    monthly_plan_cols = [col for col in df.columns if col.startswith(f'{current_year}_') and col.endswith('_CP')]
+    monthly_actuals_cols = []
+    monthly_forecasts_cols = []
+    monthly_plan_cols = []
+
+    for col in df.columns:
+        match = monthly_col_pattern.match(col)
+        if match:
+            # match.group(1) will capture the type suffix: 'A', 'F', or 'CP'
+            col_type = match.group(1)
+            if col_type == 'A':
+                monthly_actuals_cols.append(col)
+            elif col_type == 'F':
+                monthly_forecasts_cols.append(col)
+            elif col_type == 'CP':
+                monthly_plan_cols.append(col)
+    # --- END NEW: Refined monthly column identification ---
 
     # Ensure all identified monthly columns are numeric (redundant with previous step but good for safety)
+    # This loop is still useful as a fallback check, but the list itself is now accurate
     for col_list in [monthly_actuals_cols, monthly_forecasts_cols, monthly_plan_cols]:
         for col in col_list:
             if col in df.columns:
@@ -104,25 +127,33 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     # --- New Metrics Calculations ---
 
     # Sum of Actual Spend over the months (YTD) for the current year
-    # Only sum actuals up to the current month
+    # Only sum actuals up to the current month (using global current_month)
     ytd_actual_cols = [col for col in monthly_actuals_cols if int(col.split('_')[1]) <= current_month]
     df['SUM_ACTUAL_SPEND_YTD'] = df[ytd_actual_cols].sum(axis=1) if ytd_actual_cols else 0
 
     # Forecasted spend over the next month
-    next_month = current_month + 1
-    next_month_str = f"{current_year}_{next_month:02d}_F"
-    df['FORECASTED_SPEND_NEXT_MONTH'] = df[next_month_str] if next_month_str in df.columns else 0
+    next_month_val = current_month + 1
+    # Handle year rollover for next month forecast if current month is December
+    if next_month_val > 12:
+        next_month_str_col = f"{current_year+1}_01_F"
+    else:
+        next_month_str_col = f"{current_year}_{next_month_val:02d}_F"
+    df['FORECASTED_SPEND_NEXT_MONTH'] = df[next_month_str_col] if next_month_str_col in df.columns else 0
 
-    # Total Capital Plan (already calculated as TOTAL_2025_CAPITAL_PLAN, just rename for clarity if needed)
+    # Total Capital Plan (already calculated as TOTAL_YEAR_CAPITAL_PLAN)
     df['TOTAL_CAPITAL_PLAN_SUM'] = df[f'TOTAL_{current_year}_CAPITAL_PLAN']
 
     # Run rate per month based on actuals, forecast, and capital plans
-    # Simplistic run rate: Total Actuals + Total Forecasts / Number of months with data
-    # This can be more complex depending on definition, using current approach for now
+    # Using actuals up to current month for average, and total forecast for remaining months
     total_spend_for_run_rate = df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']
-    number_of_months_with_data = len(monthly_actuals_cols) # Assuming all monthly columns are for the full year 12 months for calculation
-    if number_of_months_with_data > 0:
-        df['RUN_RATE_PER_MONTH'] = total_spend_for_run_rate / number_of_months_with_data
+    # Changed number_of_months_with_data to be the current_month for a YTD run rate
+    number_of_months_for_run_rate = current_month # Use current_month for YTD rate
+    if number_of_months_for_run_rate > 0:
+        df['RUN_RATE_PER_MONTH'] = (df['SUM_ACTUAL_SPEND_YTD'] / number_of_months_for_run_rate) + \
+                                   (df[f'TOTAL_{current_year}_FORECASTS'] / (12 - number_of_months_for_run_rate) if (12 - number_of_months_for_run_rate) > 0 else 0)
+        # Re-evaluating run rate: simplest is total forecast/plan / 12, or YTD actuals / months passed
+        # Let's stick to total expected spend for the year divided by 12 for an *average* monthly rate
+        df['RUN_RATE_PER_MONTH'] = (df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']) / 12
     else:
         df['RUN_RATE_PER_MONTH'] = 0
 
@@ -249,7 +280,7 @@ if uploaded_file is not None:
             'PORTFOLIO_OBS_LEVEL1', 'SUB_PORTFOLIO_OBS_LEVEL2', 'MASTER_PROJECT_ID',
             'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION', 'FUND_DECISION', # Added FUND_DECISION
             'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
-            f'TOTAL_{datetime.now().year}_ACTUALS', f'TOTAL_{datetime.now().year}_FORECASTS', f'TOTAL_{datetime.now().year}_CAPITAL_PLAN',
+            f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
             'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA',
             'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT' # Added new metrics
         ]
@@ -260,7 +291,7 @@ if uploaded_file is not None:
         financial_format_map = {
             col: "${:,.2f}" for col in project_table_cols_present if col in [
                 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
-                f'TOTAL_{datetime.now().year}_ACTUALS', f'TOTAL_{datetime.now().year}_FORECASTS', f'TOTAL_{datetime.now().year}_CAPITAL_PLAN',
+                f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
                 'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT'
             ]
         }
@@ -275,15 +306,28 @@ if uploaded_file is not None:
 
         st.markdown("---")
 
-        # --- 2025 Monthly Spend Trends ---
-        st.subheader(f"{datetime.now().year} Monthly Spend Trends")
+        # --- Monthly Spend Trends ---
+        st.subheader(f"{current_year} Monthly Spend Trends")
 
-        current_year_str = str(datetime.now().year)
-        current_month_num = datetime.now().month
+        # --- NEW: Refined identification of monthly columns for filtering (same logic as load_data) ---
+        # We use current_year_str from the global scope.
+        monthly_col_pattern_filtered = re.compile(rf'^{current_year_str}_\d{{2}}_([AF]|CP)$')
 
-        monthly_actuals_cols_filtered = [col for col in filtered_df.columns if col.startswith(f'{current_year_str}_') and col.endswith('_A')]
-        monthly_forecasts_cols_filtered = [col for col in filtered_df.columns if col.startswith(f'{current_year_str}_') and col.endswith('_F')]
-        monthly_plan_cols_filtered = [col for col in filtered_df.columns if col.startswith(f'{current_year_str}_') and col.endswith('_CP')]
+        monthly_actuals_cols_filtered = []
+        monthly_forecasts_cols_filtered = []
+        monthly_plan_cols_filtered = []
+
+        for col in filtered_df.columns:
+            match = monthly_col_pattern_filtered.match(col)
+            if match:
+                col_type = match.group(1)
+                if col_type == 'A':
+                    monthly_actuals_cols_filtered.append(col)
+                elif col_type == 'F':
+                    monthly_forecasts_cols_filtered.append(col)
+                elif col_type == 'CP':
+                    monthly_plan_cols_filtered.append(col)
+        # --- END NEW: Refined monthly column identification ---
 
         monthly_combined_df = pd.DataFrame()
         data_to_concat = []
@@ -291,19 +335,20 @@ if uploaded_file is not None:
         # Actuals (historic)
         actuals_data_points = []
         for col in monthly_actuals_cols_filtered:
+            # The 'int(col.split('_')[1])' is now safe due to the regex filtering above
             month_num = int(col.split('_')[1])
-            if month_num <= current_month_num:
+            if month_num <= current_month: # Use global current_month
                 actuals_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Actuals'})
-        if sum(d['Amount'] for d in actuals_data_points) != 0: # Only add if sum is not zero
+        if actuals_data_points and sum(d['Amount'] for d in actuals_data_points) != 0: # Only add if sum is not zero
             data_to_concat.append(pd.DataFrame(actuals_data_points))
 
         # Forecasts (future)
         forecasts_data_points = []
         for col in monthly_forecasts_cols_filtered:
             month_num = int(col.split('_')[1])
-            if month_num > current_month_num:
+            if month_num > current_month: # Use global current_month
                 forecasts_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Forecasts'})
-        if sum(d['Amount'] for d in forecasts_data_points) != 0: # Only add if sum is not zero
+        if forecasts_data_points and sum(d['Amount'] for d in forecasts_data_points) != 0: # Only add if sum is not zero
             data_to_concat.append(pd.DataFrame(forecasts_data_points))
 
         # Capital Plan (all months)
@@ -311,7 +356,7 @@ if uploaded_file is not None:
         for col in monthly_plan_cols_filtered:
             month_num = int(col.split('_')[1])
             plan_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Capital Plan'})
-        if sum(d['Amount'] for d in plan_data_points) != 0: # Only add if sum is not zero
+        if plan_data_points and sum(d['Amount'] for d in plan_data_points) != 0: # Only add if sum is not zero
             data_to_concat.append(pd.DataFrame(plan_data_points))
 
 
@@ -558,7 +603,7 @@ if uploaded_file is not None:
 
             st.write("#### Top 5 Best Behaving Projects (Closest to Business Allocation)")
             st.dataframe(best_projects[[
-                'PROJECT_NAME', 'BUSINESS_ALLOCATION', 'TOTAL_2025_FORECASTS',
+                'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
                 'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
             ]].style.format({
                 'BUSINESS_ALLOCATION': "${:,.2f}",
@@ -569,13 +614,13 @@ if uploaded_file is not None:
 
             st.write("#### Bottom 5 Worst Behaving Projects (Furthest from Business Allocation)")
             st.dataframe(worst_projects[[
-                'PROJECT_NAME', 'BUSINESS_ALLOCATION', 'TOTAL_2025_FORECASTS',
+                'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
                 'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
             ]].style.format({
                 'BUSINESS_ALLOCATION': "${:,.2f}",
                 f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
                 'CAPITAL_VARIANCE': "{:,.2f}",
-                'Absolute_Capital_VARIANCE': "{:,.2f}"
+                'Absolute_Capital_Variance': "{:,.2f}"
             }), use_container_width=True, hide_index=True)
         else:
             st.info("Column 'CAPITAL_VARIANCE' not found for Project Performance analysis. Ensure 'BUSINESS_ALLOCATION' and current year forecasts are available.")
@@ -602,21 +647,130 @@ if uploaded_file is not None:
             capital_overspend: float,
             net_reallocation_amount: float,
             monthly_combined_df: pd.DataFrame | None,
-            fig_monthly_trends: go.Figure | None,       # <-- THIS LINE IS CHANGED
-            fig_qe_variance: go.Figure | None,          # <-- THIS LINE IS CHANGED
-            fig_ba_variance: go.Figure | None,           # <-- THIS LINE IS CHANGED
-            fig_portfolio_alloc: go.Figure | None,       # <-- THIS LINE IS CHANGED
-            fig_sub_portfolio_alloc: go.Figure | None,   # <-- THIS LINE IS CHANGED
-            fig_brs_alloc: go.Figure | None,             # <-- THIS LINE IS CHANGED
+            fig_monthly_trends: go.Figure | None,
+            fig_qe_variance: go.Figure | None,
+            fig_ba_variance: go.Figure | None,
+            fig_portfolio_alloc: go.Figure | None,
+            fig_sub_portfolio_alloc: go.Figure | None,
+            fig_brs_alloc: go.Figure | None,
             selected_project_name: str,
             project_details: pd.Series | None,
-            fig_project_monthly: go.Figure | None        # <-- THIS LINE IS CHANGED
+            fig_project_monthly: go.Figure | None
         ) -> str:
+            """Generates a comprehensive HTML report of the dashboard state."""
 
+            # Base HTML structure and styling
+            report_html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capital Project Portfolio Report</title>
+    <style>
+        body {{ font-family: sans-serif; line-height: 1.6; margin: 20px; color: #333; }}
+        h1, h2, h3 {{ color: #004d40; }}
+        .metric-container {{ display: flex; justify-content: space-around; flex-wrap: wrap; margin-bottom: 20px; }}
+        .metric-box {{ border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin: 10px; flex: 1; min-width: 200px; text-align: center; background-color: #f9f9f9; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+        .metric-label {{ font-size: 0.9em; color: #555; }}
+        .metric-value {{ font-size: 1.5em; font-weight: bold; color: #222; margin-top: 5px; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #e6f2f0; }}
+        .chart-container {{ margin-top: 30px; border: 1px solid #eee; padding: 10px; border-radius: 8px; background-color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }}
+        .section-title {{ margin-top: 40px; border-bottom: 2px solid #004d40; padding-bottom: 10px; }}
+        footer {{ text-align: center; margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee; font-size: 0.8em; color: #777; }}
+    </style>
+</head>
+<body>
+    <h1>Capital Project Portfolio Report</h1>
+    <p>Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+
+    <h2 class="section-title">Key Metrics Overview</h2>
+    <div class="metric-container">
+        <div class="metric-box">
+            <div class="metric-label">Total Business Allocation</div>
+            <div class="metric-value">${total_business_allocation:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Total Current EAC</div>
+            <div class="metric-value">${total_current_eac:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Total Actuals To Date</div>
+            <div class="metric-value">${total_actuals_to_date:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Number of Projects</div>
+            <div class="metric-value">{total_projects}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Sum Actual Spend (YTD)</div>
+            <div class="metric-value">${sum_actual_spend_ytd:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Forecasted Spend Next Month</div>
+            <div class="metric-value">${forecasted_spend_next_month:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Total Capital Plan</div>
+            <div class="metric-value">${total_capital_plan_sum:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Average Run Rate / Month</div>
+            <div class="metric-value">${run_rate_per_month:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Total Potential Underspend</div>
+            <div class="metric-value">${capital_underspend:,.2f}</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-label">Total Potential Overspend</div>
+            <div class="metric-value">${capital_overspend:,.2f}</div>
+        </div>
+         <div class="metric-box">
+            <div class="metric-label">Net Reallocation Amount</div>
+            <div class="metric-value">${net_reallocation_amount:,.2f}</div>
+        </div>
+    </div>
+
+    <h2 class="section-title">Filtered Project Details</h2>
+    {filtered_df[project_table_cols_present].style.format(financial_format_map).to_html(index=False)}
+
+    <h2 class="section-title">{current_year} Monthly Spend Trends</h2>
+    <div class="chart-container">
+        {fig_monthly_trends.to_html(full_html=False, include_plotlyjs='cdn') if fig_monthly_trends else '<p>No monthly trend data available.</p>'}
+    </div>
+
+    <h2 class="section-title">Variance Analysis</h2>
+    <div style="display: flex; justify-content: space-around; flex-wrap: wrap;">
+        <div class="chart-container" style="flex: 1; min-width: 45%;">
+            {fig_qe_variance.to_html(full_html=False, include_plotlyjs='cdn') if fig_qe_variance else '<p>No QE Forecast vs QE Plan Variance data available.</p>'}
+        </div>
+        <div class="chart-container" style="flex: 1; min-width: 45%;">
+            {fig_ba_variance.to_html(full_html=False, include_plotlyjs='cdn') if fig_ba_variance else '<p>No Forecast vs Business Allocation Variance data available.</p>'}
+        </div>
+    </div>
+
+    <h2 class="section-title">Capital Allocation Breakdown</h2>
+    <div style="display: flex; justify-content: space-around; flex-wrap: wrap;">
+        <div class="chart-container" style="flex: 1; min-width: 30%;">
+            {fig_portfolio_alloc.to_html(full_html=False, include_plotlyjs='cdn') if fig_portfolio_alloc else '<p>No Portfolio Level allocation data available.</p>'}
+        </div>
+        <div class="chart-container" style="flex: 1; min-width: 30%;">
+            {fig_sub_portfolio_alloc.to_html(full_html=False, include_plotlyjs='cdn') if fig_sub_portfolio_alloc else '<p>No Sub-Portfolio Level allocation data available.</p>'}
+        </div>
+        <div class="chart-container" style="flex: 1; min-width: 30%;">
+            {fig_brs_alloc.to_html(full_html=False, include_plotlyjs='cdn') if fig_brs_alloc else '<p>No BRS Classification allocation data available.</p>'}
+        </div>
+    </div>
+"""
             # Add detailed project financials if a project is selected
             if selected_project_name != 'Select a Project' and project_details is not None and fig_project_monthly is not None:
                 # Re-create monthly breakdown DF for report to ensure it has correct formatting
                 monthly_breakdown_data_html = {'Month': [f"{current_year_str}_{i:02d}" for i in range(1, 13)]}
+                monthly_types = {'_A': 'Actuals', '_F': 'Forecasts', '_CP': 'Capital Plan'}
+
                 for suffix, display_name in monthly_types.items():
                     col_prefix = f'{current_year_str}_'
                     monthly_values_html = []
@@ -666,9 +820,9 @@ if uploaded_file is not None:
                 pm_performance['Forecast_vs_Plan_Variance'] = pm_performance['Total_Forecast_Spend'] - pm_performance['Total_Capital_Plan']
                 pm_performance['Actual_vs_Forecast_Variance'] = pm_performance['Total_Actual_Spend'] - pm_performance['Total_Forecast_Spend']
                 pm_performance['Combined_Variance_Score'] = pm_performance['Forecast_vs_Plan_Variance'].abs() + pm_performance['Actual_vs_Forecast_Variance'].abs()
-                
+
                 pm_performance_sorted = pm_performance.sort_values('Combined_Variance_Score')
-                
+
                 pm_report_html += "<h3>Top 5 Project Managers (Closest to Plans/Forecasts)</h3>"
                 pm_report_html += pm_performance_sorted.head(5).style.format({
                     'Total_Forecast_Spend': "${:,.2f}", 'Total_Capital_Plan': "${:,.2f}",
@@ -684,7 +838,7 @@ if uploaded_file is not None:
                 }).to_html(index=False)
             else:
                 pm_report_html += "<p>Required columns for Project Manager Performance not found.</p>"
-            
+
             report_html_content += f"""
             <h2 class="section-title">Project Manager Performance</h2>
             {pm_report_html}
@@ -740,8 +894,11 @@ if uploaded_file is not None:
 
         if st.button("Generate Report (HTML)"):
             # Prepare data for report generation
-            current_year_str = str(datetime.now().year)
-            current_month_num = datetime.now().month
+            # current_year_str is already global
+            # current_month_num is already global
+            # Re-defining them here would create local variables, which isn't the intention
+            # We will use the global current_year_str and current_month (or current_month_num) directly
+            # No need to reassign them here.
 
             # Ensure monthly_combined_df is passed correctly for the report if it was generated
             report_monthly_combined_df = monthly_combined_df if 'monthly_combined_df' in locals() and not monthly_combined_df.empty else None
@@ -772,9 +929,7 @@ if uploaded_file is not None:
 else:
     st.info("Upload your Capital Project CSV file to get started!")
 
-st.markdown("---") # This is the change!
-
-# View Application Source Code
+st.markdown("---")
 
 with st.expander("View Application Source Code"):
     source_code = inspect.getsource(inspect.currentframe())

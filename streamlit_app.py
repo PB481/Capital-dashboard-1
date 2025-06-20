@@ -613,7 +613,7 @@ if uploaded_file is not None:
             fig_project_monthly: go.Figure | None        # <-- THIS LINE IS CHANGED
         ) -> str:
             
-    """Generates a comprehensive HTML report of the dashboard state."""
+        """Generates a comprehensive HTML report of the dashboard state."""
         # Base HTML structure and styling
        report_html_content = f"""
             <!DOCTYPE html>

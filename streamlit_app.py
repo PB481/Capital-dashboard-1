@@ -602,17 +602,17 @@ if uploaded_file is not None:
             capital_overspend: float,
             net_reallocation_amount: float,
             monthly_combined_df: pd.DataFrame | None,
-            fig_monthly_trends: px.graph_objects.Figure | None,
-            fig_qe_variance: px.graph_objects.Figure | None,
-            fig_ba_variance: px.graph_objects.Figure | None,
-            fig_portfolio_alloc: px.graph_objects.Figure | None,
-            fig_sub_portfolio_alloc: px.graph_objects.Figure | None,
-            fig_brs_alloc: px.graph_objects.Figure | None,
+            fig_monthly_trends: go.Figure | None,       # <-- THIS LINE IS CHANGED
+            fig_qe_variance: go.Figure | None,          # <-- THIS LINE IS CHANGED
+            fig_ba_variance: go.Figure | None,           # <-- THIS LINE IS CHANGED
+            fig_portfolio_alloc: go.Figure | None,       # <-- THIS LINE IS CHANGED
+            fig_sub_portfolio_alloc: go.Figure | None,   # <-- THIS LINE IS CHANGED
+            fig_brs_alloc: go.Figure | None,             # <-- THIS LINE IS CHANGED
             selected_project_name: str,
             project_details: pd.Series | None,
-            fig_project_monthly: px.graph_objects.Figure | None
+            fig_project_monthly: go.Figure | None        # <-- THIS LINE IS CHANGED
         ) -> str:
-            """Generates a comprehensive HTML report of the dashboard state."""
+           """Generates a comprehensive HTML report of the dashboard state."""
 
             # Base HTML structure and styling
             report_html_content = f"""

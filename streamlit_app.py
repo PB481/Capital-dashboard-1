@@ -878,7 +878,7 @@ if uploaded_file is not None:
 else:
     st.info("Upload your Capital Project CSV file to get started!")
 
----
+st.markdown("---") # This is the change!
 
 # View Application Source Code
 

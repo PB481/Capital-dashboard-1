@@ -612,10 +612,10 @@ if uploaded_file is not None:
             project_details: pd.Series | None,
             fig_project_monthly: go.Figure | None        # <-- THIS LINE IS CHANGED
         ) -> str:
-           """Generates a comprehensive HTML report of the dashboard state."""
-
-            # Base HTML structure and styling
-            report_html_content = f"""
+            
+    """Generates a comprehensive HTML report of the dashboard state."""
+        # Base HTML structure and styling
+       report_html_content = f"""
             <!DOCTYPE html>
             <html lang="en">
             <head>

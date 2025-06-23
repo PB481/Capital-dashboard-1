@@ -133,15 +133,13 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     ytd_actual_cols = [col for col in monthly_actuals_cols if int(col.split('_')[1]) <= current_month]
     df['SUM_ACTUAL_SPEND_YTD'] = df[ytd_actual_cols].sum(axis=1) if ytd_actual_cols else 0
 
-    # UPDATED: 'Sum Of Forecasted Numbers' (Total Annual Forecast)
+    # 'Sum Of Forecasted Numbers' (Total Annual Forecast)
     # This now sums ALL _F columns for the current year
     df['SUM_OF_FORECASTED_NUMBERS'] = df[f'TOTAL_{current_year}_FORECASTS']
-
 
     # Run rate per month based on actuals, forecast, and capital plans
     # Simplistic run rate: Total (Actuals + Forecasts) for the year divided by 12 months
     df['RUN_RATE_PER_MONTH'] = (df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']) / 12
-
 
     # Capital Total Under Spend and Overspend
     # Assuming 'BUSINESS_ALLOCATION' is the target for comparison
@@ -157,6 +155,31 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
 
     # Net amount to confirm if we need to reallocate capital
     df['NET_REALLOCATION_AMOUNT'] = df['CAPITAL_UNDERSPEND'] - df['CAPITAL_OVERSPEND']
+
+    # --- NEW METHODOLOGY FOR PERFORMANCE ---
+    # Calculate month-to-month Actuals vs Forecasts variances
+    monthly_af_variance_cols = []
+    for i in range(1, 13): # For all 12 months
+        actual_col = f'{current_year}_{i:02d}_A'
+        forecast_col = f'{current_year}_{i:02d}_F'
+        variance_col_name = f'{current_year}_{i:02d}_AF_VARIANCE'
+
+        if actual_col in df.columns and forecast_col in df.columns:
+            df[variance_col_name] = df[actual_col] - df[forecast_col]
+            monthly_af_variance_cols.append(variance_col_name)
+        else:
+            # If a month's A or F column is missing, the variance for that month will be considered 0.
+            # This avoids errors but might mask missing data.
+            df[variance_col_name] = 0
+            monthly_af_variance_cols.append(variance_col_name)
+
+
+    # Calculate the total monthly spread score (sum of absolute variances) for each project
+    if monthly_af_variance_cols:
+        df['TOTAL_MONTHLY_SPREAD_SCORE'] = df[monthly_af_variance_cols].abs().sum(axis=1)
+    else:
+        df['TOTAL_MONTHLY_SPREAD_SCORE'] = 0
+    # --- END NEW METHODOLOGY ---
 
     return df
 
@@ -211,7 +234,7 @@ if uploaded_file is not None:
         # --- Key Metrics Overview ---
         st.subheader("Key Metrics Overview")
         # UPDATED: Adjusted columns for the first row after metric removals
-        col1, col2, col3 = st.columns(3) # Was 4, now 3 (Projects, YTD Actuals, Sum of Forecasted Numbers)
+        col1, col2, col3 = st.columns(3) # Projects, YTD Actuals, Sum of Forecasted Numbers
 
         # Removed: Total Business Allocation, Total Current EAC, Total Capital Plan, Total Actuals To Date
         # Remaining and reordered metrics for first row
@@ -252,7 +275,8 @@ if uploaded_file is not None:
             'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
             f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
             'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA',
-            'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT'
+            'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT',
+            'TOTAL_MONTHLY_SPREAD_SCORE' # Added new metric for project-level tracking
         ]
         # Filter to only include columns that actually exist in the filtered_df
         project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
@@ -262,7 +286,8 @@ if uploaded_file is not None:
             col: "${:,.2f}" for col in project_table_cols_present if col in [
                 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
                 f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
-                'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT'
+                'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT',
+                'TOTAL_MONTHLY_SPREAD_SCORE' # Format the new score as currency
             ]
         }
         # Add specific formats for variance columns if present
@@ -516,84 +541,52 @@ if uploaded_file is not None:
         # --- Project Manager Performance ---
         st.subheader("Project Manager Performance")
 
-        if 'PROJECT_MANAGER' in filtered_df.columns and f'TOTAL_{current_year}_FORECASTS' in filtered_df.columns and f'TOTAL_{current_year}_CAPITAL_PLAN' in filtered_df.columns:
-            # Calculate variance for project managers
+        # UPDATED: Project Manager Performance based on TOTAL_MONTHLY_SPREAD_SCORE
+        if 'PROJECT_MANAGER' in filtered_df.columns and 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
             pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
-                Total_Forecast_Spend=(f'TOTAL_{current_year}_FORECASTS', 'sum'),
-                Total_Capital_Plan=(f'TOTAL_{current_year}_CAPITAL_PLAN', 'sum'),
-                Total_Actual_Spend=(f'TOTAL_{current_year}_ACTUALS', 'sum') # Include actuals for better context
+                Total_Monthly_Spread=('TOTAL_MONTHLY_SPREAD_SCORE', 'sum'),
+                Number_of_Projects=('PROJECT_NAME', 'count') # Added count of projects for context
             ).reset_index()
 
-            # Calculate the absolute difference from plan/forecast
-            pm_performance['Forecast_vs_Plan_Variance'] = pm_performance['Total_Forecast_Spend'] - pm_performance['Total_Capital_Plan']
-            pm_performance['Actual_vs_Forecast_Variance'] = pm_performance['Total_Actual_Spend'] - pm_performance['Total_Forecast_Spend']
+            # Rank by Total_Monthly_Spread (lower is better)
+            pm_performance = pm_performance.sort_values('Total_Monthly_Spread')
 
-            # A combined score for "closeness" - sum of absolute variances
-            pm_performance['Combined_Variance_Score'] = (
-                pm_performance['Forecast_vs_Plan_Variance'].abs() +
-                pm_performance['Actual_vs_Forecast_Variance'].abs()
-            )
-
-            pm_performance = pm_performance.sort_values('Combined_Variance_Score')
-
-            st.write("#### Top 5 Project Managers (Closest to Plans/Forecasts)")
+            st.write("#### Top 5 Project Managers (Closest to Monthly Forecasts)")
             st.dataframe(pm_performance.head(5).style.format({
-                'Total_Forecast_Spend': "${:,.2f}",
-                'Total_Capital_Plan': "${:,.2f}",
-                'Total_Actual_Spend': "${:,.2f}",
-                'Forecast_vs_Plan_Variance': "{:,.2f}",
-                'Actual_vs_Forecast_Variance': "{:,.2f}",
-                'Combined_Variance_Score': "{:,.2f}"
+                'Total_Monthly_Spread': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
 
-            st.write("#### Bottom 5 Project Managers (Furthest from Plans/Forecasts)")
-            st.dataframe(pm_performance.tail(5).sort_values('Combined_Variance_Score', ascending=False).style.format({
-                'Total_Forecast_Spend': "${:,.2f}",
-                'Total_Capital_Plan': "${:,.2f}",
-                'Total_Actual_Spend': "${:,.2f}",
-                'Forecast_vs_Plan_Variance': "{:,.2f}",
-                'Actual_vs_Forecast_Variance': "{:,.2f}",
-                'Combined_Variance_Score': "{:,.2f}"
+            st.write("#### Bottom 5 Project Managers (Furthest from Monthly Forecasts)")
+            st.dataframe(pm_performance.tail(5).sort_values('Total_Monthly_Spread', ascending=False).style.format({
+                'Total_Monthly_Spread': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
         else:
-            st.info("Required columns for Project Manager Performance (PROJECT_MANAGER, TOTAL_YEAR_FORECASTS, TOTAL_YEAR_CAPITAL_PLAN) not found.")
+            st.info("Required columns for Project Manager Performance (PROJECT_MANAGER, TOTAL_MONTHLY_SPREAD_SCORE) not found.")
 
         st.markdown("---")
 
         # --- Project Performance ---
         st.subheader("Project Performance")
 
-        # This leverages the 'CAPITAL_VARIANCE' calculated in load_data
-        if 'CAPITAL_VARIANCE' in filtered_df.columns:
-            project_performance = filtered_df.copy()
-            project_performance['Absolute_Capital_Variance'] = project_performance['CAPITAL_VARIANCE'].abs()
+        # UPDATED: Project Performance based on TOTAL_MONTHLY_SPREAD_SCORE
+        if 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
+            project_performance_ranked = filtered_df.sort_values('TOTAL_MONTHLY_SPREAD_SCORE')
 
-            best_projects = project_performance.sort_values('Absolute_Capital_Variance').head(5)
-            worst_projects = project_performance.sort_values('Absolute_Capital_Variance', ascending=False).head(5)
-
-            st.write("#### Top 5 Best Behaving Projects (Closest to Business Allocation)")
-            st.dataframe(best_projects[[
-                'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
-                'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+            st.write("#### Top 5 Best Behaving Projects (Closest to Monthly Forecasts)")
+            st.dataframe(project_performance_ranked.head(5)[[
+                'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE' # Display only relevant columns
             ]].style.format({
-                'BUSINESS_ALLOCATION': "${:,.2f}",
-                f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
-                'CAPITAL_VARIANCE': "{:,.2f}",
-                'Absolute_Capital_Variance': "{:,.2f}"
+                'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
 
-            st.write("#### Bottom 5 Worst Behaving Projects (Furthest from Business Allocation)")
-            st.dataframe(worst_projects[[
-                'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
-                'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+            st.write("#### Bottom 5 Worst Behaving Projects (Furthest from Monthly Forecasts)")
+            st.dataframe(project_performance_ranked.tail(5).sort_values('TOTAL_MONTHLY_SPREAD_SCORE', ascending=False)[[
+                'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE' # Display only relevant columns
             ]].style.format({
-                'BUSINESS_ALLOCATION': "${:,.2f}",
-                f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
-                'CAPITAL_VARIANCE': "{:,.2f}",
-                'Absolute_Capital_Variance': "{:,.2f}"
+                'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
         else:
-            st.info("Column 'CAPITAL_VARIANCE' not found for Project Performance analysis. Ensure 'BUSINESS_ALLOCATION' and current year forecasts are available.")
+            st.info("Column 'TOTAL_MONTHLY_SPREAD_SCORE' not found for Project Performance analysis.")
 
 
         st.markdown("---")
@@ -605,11 +598,9 @@ if uploaded_file is not None:
         # Function to generate the HTML report content (updated to include new metrics and tables)
         def generate_html_report(
             filtered_df: pd.DataFrame,
-            # REMOVED: total_business_allocation: float, total_current_eac: float, total_capital_plan_sum: float,
-            # REMOVED: total_actuals_to_date: float,
             total_projects: int,
             sum_actual_spend_ytd: float,
-            sum_of_forecasted_numbers_sum: float, # UPDATED: Changed parameter name
+            sum_of_forecasted_numbers_sum: float, # UPDATED: Parameter name
             run_rate_per_month: float,
             capital_underspend: float,
             capital_overspend: float,
@@ -665,7 +656,9 @@ if uploaded_file is not None:
             <div class="metric-value">${sum_actual_spend_ytd:,.2f}</div>
         </div>
         <div class="metric-box">
-            <div class="metric-label">Sum Of Forecasted Numbers</div> <div class="metric-value">${sum_of_forecasted_numbers_sum:,.2f}</div> </div>
+            <div class="metric-label">Sum Of Forecasted Numbers</div>
+            <div class="metric-value">${sum_of_forecasted_numbers_sum:,.2f}</div>
+        </div>
         <div class="metric-box">
             <div class="metric-label">Average Run Rate / Month</div>
             <div class="metric-value">${run_rate_per_month:,.2f}</div>
@@ -761,30 +754,22 @@ if uploaded_file is not None:
 
             # Add Project Manager Performance to report
             pm_report_html = ""
-            if 'PROJECT_MANAGER' in filtered_df.columns and f'TOTAL_{current_year}_FORECASTS' in filtered_df.columns and f'TOTAL_{current_year}_CAPITAL_PLAN' in filtered_df.columns:
+            if 'PROJECT_MANAGER' in filtered_df.columns and 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
                 pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
-                    Total_Forecast_Spend=(f'TOTAL_{current_year}_FORECASTS', 'sum'),
-                    Total_Capital_Plan=(f'TOTAL_{current_year}_CAPITAL_PLAN', 'sum'),
-                    Total_Actual_Spend=(f'TOTAL_{current_year}_ACTUALS', 'sum')
+                    Total_Monthly_Spread=('TOTAL_MONTHLY_SPREAD_SCORE', 'sum'),
+                    Number_of_Projects=('PROJECT_NAME', 'count')
                 ).reset_index()
-                pm_performance['Forecast_vs_Plan_Variance'] = pm_performance['Total_Forecast_Spend'] - pm_performance['Total_Capital_Plan']
-                pm_performance['Actual_vs_Forecast_Variance'] = pm_performance['Total_Actual_Spend'] - pm_performance['Total_Forecast_Spend']
-                pm_performance['Combined_Variance_Score'] = pm_performance['Forecast_vs_Plan_Variance'].abs() + pm_performance['Actual_vs_Forecast_Variance'].abs()
 
-                pm_performance_sorted = pm_performance.sort_values('Combined_Variance_Score')
+                pm_performance_sorted = pm_performance.sort_values('Total_Monthly_Spread')
 
-                pm_report_html += "<h3>Top 5 Project Managers (Closest to Plans/Forecasts)</h3>"
+                pm_report_html += "<h3>Top 5 Project Managers (Closest to Monthly Forecasts)</h3>"
                 pm_report_html += pm_performance_sorted.head(5).style.format({
-                    'Total_Forecast_Spend': "${:,.2f}", 'Total_Capital_Plan': "${:,.2f}",
-                    'Total_Actual_Spend': "${:,.2f}", 'Forecast_vs_Plan_Variance': "{:,.2f}",
-                    'Actual_vs_Forecast_Variance': "{:,.2f}", 'Combined_Variance_Score': "{:,.2f}"
+                    'Total_Monthly_Spread': "${:,.2f}"
                 }).to_html(index=False)
 
-                pm_report_html += "<h3>Bottom 5 Project Managers (Furthest from Plans/Forecasts)</h3>"
-                pm_report_html += pm_performance_sorted.tail(5).sort_values('Combined_Variance_Score', ascending=False).style.format({
-                    'Total_Forecast_Spend': "${:,.2f}", 'Total_Capital_Plan': "${:,.2f}",
-                    'Total_Actual_Spend': "${:,.2f}", 'Forecast_vs_Plan_Variance': "{:,.2f}",
-                    'Actual_vs_Forecast_Variance': "{:,.2f}", 'Combined_Variance_Score': "{:,.2f}"
+                pm_report_html += "<h3>Bottom 5 Project Managers (Furthest from Monthly Forecasts)</h3>"
+                pm_report_html += pm_performance_sorted.tail(5).sort_values('Total_Monthly_Spread', ascending=False).style.format({
+                    'Total_Monthly_Spread': "${:,.2f}"
                 }).to_html(index=False)
             else:
                 pm_report_html += "<p>Required columns for Project Manager Performance not found.</p>"
@@ -796,36 +781,24 @@ if uploaded_file is not None:
 
             # Add Project Performance to report
             project_perf_report_html = ""
-            if 'CAPITAL_VARIANCE' in filtered_df.columns:
-                project_performance = filtered_df.copy()
-                project_performance['Absolute_Capital_Variance'] = project_performance['CAPITAL_VARIANCE'].abs()
+            if 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
+                project_performance_ranked = filtered_df.sort_values('TOTAL_MONTHLY_SPREAD_SCORE')
 
-                best_projects = project_performance.sort_values('Absolute_Capital_Variance').head(5)
-                worst_projects = project_performance.sort_values('Absolute_Capital_Variance', ascending=False).head(5)
-
-                project_perf_report_html += "<h3>Top 5 Best Behaving Projects (Closest to Business Allocation)</h3>"
-                project_perf_report_html += best_projects[[
-                    'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
-                    'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+                project_perf_report_html += "<h3>Top 5 Best Behaving Projects (Closest to Monthly Forecasts)</h3>"
+                project_perf_report_html += project_performance_ranked.head(5)[[
+                    'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE'
                 ]].style.format({
-                    'BUSINESS_ALLOCATION': "${:,.2f}",
-                    f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
-                    'CAPITAL_VARIANCE': "{:,.2f}",
-                    'Absolute_Capital_Variance': "{:,.2f}"
+                    'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
                 }).to_html(index=False)
 
-                project_perf_report_html += "<h3>Bottom 5 Worst Behaving Projects (Furthest from Business Allocation)</h3>"
-                project_perf_report_html += worst_projects[[
-                    'PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS',
-                    'CAPITAL_VARIANCE', 'Absolute_Capital_Variance'
+                project_perf_report_html += "<h3>Bottom 5 Worst Behaving Projects (Furthest from Monthly Forecasts)</h3>"
+                project_perf_report_html += project_performance_ranked.tail(5).sort_values('TOTAL_MONTHLY_SPREAD_SCORE', ascending=False)[[
+                    'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE'
                 ]].style.format({
-                    'BUSINESS_ALLOCATION': "${:,.2f}",
-                    f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
-                    'CAPITAL_VARIANCE': "{:,.2f}",
-                    'Absolute_Capital_Variance': "{:,.2f}"
+                    'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
                 }).to_html(index=False)
             else:
-                project_perf_report_html += "<p>Required columns for Project Performance analysis not found.</p>"
+                project_perf_report_html += "<p>Column 'TOTAL_MONTHLY_SPREAD_SCORE' not found for Project Performance analysis.</p>"
 
             report_html_content += f"""
             <h2 class="section-title">Project Performance</h2>
@@ -850,7 +823,7 @@ if uploaded_file is not None:
             report_content = generate_html_report(
                 filtered_df,
                 total_projects,
-                sum_actual_spend_ytd, sum_of_forecasted_numbers_sum, # UPDATED: Changed argument name
+                sum_actual_spend_ytd, sum_of_forecasted_numbers_sum,
                 run_rate_per_month, capital_underspend, capital_overspend, net_reallocation_amount,
                 report_monthly_combined_df, fig_monthly_trends, fig_qe_variance, fig_ba_variance,
                 fig_portfolio_alloc, fig_sub_portfolio_alloc, fig_brs_alloc,

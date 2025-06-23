@@ -5,7 +5,7 @@ import io
 import plotly.graph_objects as go
 import inspect
 from datetime import datetime
-import re # <-- NEW: Import the re module for regular expressions
+import re # Import the re module for regular expressions
 
 # Define current_year and current_month globally (important for broad accessibility)
 current_year = datetime.now().year
@@ -82,7 +82,7 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
             df[col] = df[col].astype(str).str.replace(',', '').str.strip().replace('', '0')
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # --- NEW: Refined identification of monthly columns using a strict regex pattern ---
+    # --- Refined identification of monthly columns using a strict regex pattern ---
     # This pattern ensures the format is YEAR_MM_TYPE (e.g., 2025_01_A, 2025_12_CP)
     # \d{{2}} ensures the month part is exactly two digits.
     # We use current_year from the global scope.
@@ -103,7 +103,7 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
                 monthly_forecasts_cols.append(col)
             elif col_type == 'CP':
                 monthly_plan_cols.append(col)
-    # --- END NEW: Refined monthly column identification ---
+    # --- END Refined monthly column identification ---
 
     # Ensure all identified monthly columns are numeric (redundant with previous step but good for safety)
     # This loop is still useful as a fallback check, but the list itself is now accurate
@@ -131,31 +131,19 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     ytd_actual_cols = [col for col in monthly_actuals_cols if int(col.split('_')[1]) <= current_month]
     df['SUM_ACTUAL_SPEND_YTD'] = df[ytd_actual_cols].sum(axis=1) if ytd_actual_cols else 0
 
-    # Forecasted spend over the next month
-    next_month_val = current_month + 1
-    # Handle year rollover for next month forecast if current month is December
-    if next_month_val > 12:
-        next_month_str_col = f"{current_year+1}_01_F"
-    else:
-        next_month_str_col = f"{current_year}_{next_month_val:02d}_F"
-    df['FORECASTED_SPEND_NEXT_MONTH'] = df[next_month_str_col] if next_month_str_col in df.columns else 0
+    # UPDATED: Calculate Total Future Forecast (from current month + 1 onwards)
+    future_forecast_cols = [
+        col for col in monthly_forecasts_cols
+        if int(col.split('_')[1]) > current_month # Only months after current month
+    ]
+    df['TOTAL_FUTURE_FORECAST'] = df[future_forecast_cols].sum(axis=1) if future_forecast_cols else 0
 
-    # Total Capital Plan (already calculated as TOTAL_YEAR_CAPITAL_PLAN)
+    # Total Capital Plan (still calculated in the DataFrame but removed from main metrics display)
     df['TOTAL_CAPITAL_PLAN_SUM'] = df[f'TOTAL_{current_year}_CAPITAL_PLAN']
 
     # Run rate per month based on actuals, forecast, and capital plans
-    # Using actuals up to current month for average, and total forecast for remaining months
-    total_spend_for_run_rate = df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']
-    # Changed number_of_months_with_data to be the current_month for a YTD run rate
-    number_of_months_for_run_rate = current_month # Use current_month for YTD rate
-    if number_of_months_for_run_rate > 0:
-        df['RUN_RATE_PER_MONTH'] = (df['SUM_ACTUAL_SPEND_YTD'] / number_of_months_for_run_rate) + \
-                                   (df[f'TOTAL_{current_year}_FORECASTS'] / (12 - number_of_months_for_run_rate) if (12 - number_of_months_for_run_rate) > 0 else 0)
-        # Re-evaluating run rate: simplest is total forecast/plan / 12, or YTD actuals / months passed
-        # Let's stick to total expected spend for the year divided by 12 for an *average* monthly rate
-        df['RUN_RATE_PER_MONTH'] = (df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']) / 12
-    else:
-        df['RUN_RATE_PER_MONTH'] = 0
+    # Simplistic run rate: Total (Actuals + Forecasts) for the year divided by 12 months
+    df['RUN_RATE_PER_MONTH'] = (df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']) / 12
 
 
     # Capital Total Under Spend and Overspend
@@ -225,37 +213,25 @@ if uploaded_file is not None:
 
         # --- Key Metrics Overview ---
         st.subheader("Key Metrics Overview")
-        # Update columns for new metrics
-        col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+        # UPDATED: Reduced number of columns in the first row to reflect removed metrics
+        col1, col2, col3, col4 = st.columns(4) # Previously 7, now adjusted for 4 key metrics in first row
 
-        # Use .get() with a default value for robustness in case columns are missing
-        # though load_data should ensure their existence.
+        # Removed: Total Business Allocation, Total Current EAC, Total Capital Plan
+        # Remaining and reordered metrics for first row
         with col1:
-            total_business_allocation = filtered_df['BUSINESS_ALLOCATION'].sum() if 'BUSINESS_ALLOCATION' in filtered_df.columns else 0
-            st.metric(label="Total Business Allocation", value=f"${total_business_allocation:,.2f}")
-        with col2:
-            total_current_eac = filtered_df['CURRENT_EAC'].sum() if 'CURRENT_EAC' in filtered_df.columns else 0
-            st.metric(label="Total Current EAC", value=f"${total_current_eac:,.2f}")
-        with col3:
-            total_actuals_to_date = filtered_df['TOTAL_ACTUALS_TO_DATE'].sum() if 'TOTAL_ACTUALS_TO_DATE' in filtered_df.columns else 0
-            st.metric(label="Total Actuals To Date", value=f"${total_actuals_to_date:,.2f}")
-        with col4:
             total_projects = len(filtered_df)
             st.metric(label="Number of Projects", value=total_projects)
-        with col5:
-            # New Metric: Sum of Actual Spend (YTD)
+        with col2:
+            total_actuals_to_date = filtered_df['TOTAL_ACTUALS_TO_DATE'].sum() if 'TOTAL_ACTUALS_TO_DATE' in filtered_df.columns else 0
+            st.metric(label="Total Actuals To Date", value=f"${total_actuals_to_date:,.2f}")
+        with col3:
             sum_actual_spend_ytd = filtered_df['SUM_ACTUAL_SPEND_YTD'].sum() if 'SUM_ACTUAL_SPEND_YTD' in filtered_df.columns else 0
             st.metric(label="Sum Actual Spend (YTD)", value=f"${sum_actual_spend_ytd:,.2f}")
-        with col6:
-            # New Metric: Forecasted Spend Next Month
-            forecasted_spend_next_month = filtered_df['FORECASTED_SPEND_NEXT_MONTH'].sum() if 'FORECASTED_SPEND_NEXT_MONTH' in filtered_df.columns else 0
-            st.metric(label="Forecasted Spend Next Month", value=f"${forecasted_spend_next_month:,.2f}")
-        with col7:
-            # New Metric: Total Capital Plan
-            total_capital_plan_sum = filtered_df['TOTAL_CAPITAL_PLAN_SUM'].sum() if 'TOTAL_CAPITAL_PLAN_SUM' in filtered_df.columns else 0
-            st.metric(label="Total Capital Plan", value=f"${total_capital_plan_sum:,.2f}")
+        with col4: # UPDATED: Changed label and source column
+            total_future_forecast_sum = filtered_df['TOTAL_FUTURE_FORECAST'].sum() if 'TOTAL_FUTURE_FORECAST' in filtered_df.columns else 0
+            st.metric(label="Total Future Forecast", value=f"${total_future_forecast_sum:,.2f}")
 
-        # New Metrics: Run Rate, Under/Over Spend, Net Reallocation
+        # Metrics for the second row remain the same (Run Rate, Under/Over Spend, Net Reallocation)
         col_new_metrics1, col_new_metrics2, col_new_metrics3, col_new_metrics4 = st.columns(4)
         with col_new_metrics1:
             run_rate_per_month = filtered_df['RUN_RATE_PER_MONTH'].mean() if 'RUN_RATE_PER_MONTH' in filtered_df.columns else 0
@@ -278,11 +254,11 @@ if uploaded_file is not None:
         # Define columns to display in the project details table
         project_table_cols = [
             'PORTFOLIO_OBS_LEVEL1', 'SUB_PORTFOLIO_OBS_LEVEL2', 'MASTER_PROJECT_ID',
-            'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION', 'FUND_DECISION', # Added FUND_DECISION
+            'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION', 'FUND_DECISION',
             'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
             f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
             'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA',
-            'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT' # Added new metrics
+            'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT'
         ]
         # Filter to only include columns that actually exist in the filtered_df
         project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
@@ -309,7 +285,7 @@ if uploaded_file is not None:
         # --- Monthly Spend Trends ---
         st.subheader(f"{current_year} Monthly Spend Trends")
 
-        # --- NEW: Refined identification of monthly columns for filtering (same logic as load_data) ---
+        # --- Refined identification of monthly columns for filtering (same logic as load_data) ---
         # We use current_year_str from the global scope.
         monthly_col_pattern_filtered = re.compile(rf'^{current_year_str}_\d{{2}}_([AF]|CP)$')
 
@@ -327,7 +303,7 @@ if uploaded_file is not None:
                     monthly_forecasts_cols_filtered.append(col)
                 elif col_type == 'CP':
                     monthly_plan_cols_filtered.append(col)
-        # --- END NEW: Refined monthly column identification ---
+        # --- END Refined monthly column identification ---
 
         monthly_combined_df = pd.DataFrame()
         data_to_concat = []
@@ -635,13 +611,11 @@ if uploaded_file is not None:
         # Function to generate the HTML report content (updated to include new metrics and tables)
         def generate_html_report(
             filtered_df: pd.DataFrame,
-            total_business_allocation: float,
-            total_current_eac: float,
+            # REMOVED: total_business_allocation: float, total_current_eac: float, total_capital_plan_sum: float,
             total_actuals_to_date: float,
             total_projects: int,
             sum_actual_spend_ytd: float,
-            forecasted_spend_next_month: float,
-            total_capital_plan_sum: float,
+            total_future_forecast_sum: float, # UPDATED: Changed parameter name
             run_rate_per_month: float,
             capital_underspend: float,
             capital_overspend: float,
@@ -689,14 +663,6 @@ if uploaded_file is not None:
     <h2 class="section-title">Key Metrics Overview</h2>
     <div class="metric-container">
         <div class="metric-box">
-            <div class="metric-label">Total Business Allocation</div>
-            <div class="metric-value">${total_business_allocation:,.2f}</div>
-        </div>
-        <div class="metric-box">
-            <div class="metric-label">Total Current EAC</div>
-            <div class="metric-value">${total_current_eac:,.2f}</div>
-        </div>
-        <div class="metric-box">
             <div class="metric-label">Total Actuals To Date</div>
             <div class="metric-value">${total_actuals_to_date:,.2f}</div>
         </div>
@@ -709,13 +675,7 @@ if uploaded_file is not None:
             <div class="metric-value">${sum_actual_spend_ytd:,.2f}</div>
         </div>
         <div class="metric-box">
-            <div class="metric-label">Forecasted Spend Next Month</div>
-            <div class="metric-value">${forecasted_spend_next_month:,.2f}</div>
-        </div>
-        <div class="metric-box">
-            <div class="metric-label">Total Capital Plan</div>
-            <div class="metric-value">${total_capital_plan_sum:,.2f}</div>
-        </div>
+            <div class="metric-label">Total Future Forecast</div> <div class="metric-value">${total_future_forecast_sum:,.2f}</div> </div>
         <div class="metric-box">
             <div class="metric-label">Average Run Rate / Month</div>
             <div class="metric-value">${run_rate_per_month:,.2f}</div>
@@ -893,23 +853,14 @@ if uploaded_file is not None:
             return report_html_content
 
         if st.button("Generate Report (HTML)"):
-            # Prepare data for report generation
-            # current_year_str is already global
-            # current_month_num is already global
-            # Re-defining them here would create local variables, which isn't the intention
-            # We will use the global current_year_str and current_month (or current_month_num) directly
-            # No need to reassign them here.
-
-            # Ensure monthly_combined_df is passed correctly for the report if it was generated
             report_monthly_combined_df = monthly_combined_df if 'monthly_combined_df' in locals() and not monthly_combined_df.empty else None
-
-            # Ensure `project_details` is initialized for the report correctly if no project was selected
             report_project_details = project_details if selected_project_name != 'Select a Project' else None
             report_fig_project_monthly = fig_project_monthly if selected_project_name != 'Select a Project' else None
 
             report_content = generate_html_report(
-                filtered_df, total_business_allocation, total_current_eac, total_actuals_to_date, total_projects,
-                sum_actual_spend_ytd, forecasted_spend_next_month, total_capital_plan_sum,
+                filtered_df,
+                total_actuals_to_date, total_projects,
+                sum_actual_spend_ytd, total_future_forecast_sum, # UPDATED: Changed parameter name
                 run_rate_per_month, capital_underspend, capital_overspend, net_reallocation_amount,
                 report_monthly_combined_df, fig_monthly_trends, fig_qe_variance, fig_ba_variance,
                 fig_portfolio_alloc, fig_sub_portfolio_alloc, fig_brs_alloc,

@@ -156,29 +156,31 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     # Net amount to confirm if we need to reallocate capital
     df['NET_REALLOCATION_AMOUNT'] = df['CAPITAL_UNDERSPEND'] - df['CAPITAL_OVERSPEND']
 
-    # --- NEW METHODOLOGY FOR PERFORMANCE ---
-    # Calculate month-to-month Actuals vs Forecasts variances
+    # --- NEW METHODOLOGY FOR PERFORMANCE: AVERAGE MONTHLY SPREAD ---
     monthly_af_variance_cols = []
     for i in range(1, 13): # For all 12 months
         actual_col = f'{current_year}_{i:02d}_A'
         forecast_col = f'{current_year}_{i:02d}_F'
         variance_col_name = f'{current_year}_{i:02d}_AF_VARIANCE'
 
+        # Calculate variance only if both actual and forecast columns exist for the month
         if actual_col in df.columns and forecast_col in df.columns:
             df[variance_col_name] = df[actual_col] - df[forecast_col]
             monthly_af_variance_cols.append(variance_col_name)
         else:
-            # If a month's A or F column is missing, the variance for that month will be considered 0.
-            # This avoids errors but might mask missing data.
-            df[variance_col_name] = 0
-            monthly_af_variance_cols.append(variance_col_name)
+            # If a column is missing, its variance for calculation purposes is 0,
+            # so it doesn't affect the sum, but we'll include a placeholder column
+            # to ensure the mean calculation works correctly across all months if needed.
+            # However, for true 'average of existing data', we'd only include columns that exist.
+            # Let's adjust to only include existing valid variance columns in the mean calculation.
+            pass # We only add if both columns exist
 
-
-    # Calculate the total monthly spread score (sum of absolute variances) for each project
+    # Calculate the AVERAGE monthly spread score (average of absolute variances) for each project
     if monthly_af_variance_cols:
-        df['TOTAL_MONTHLY_SPREAD_SCORE'] = df[monthly_af_variance_cols].abs().sum(axis=1)
+        # We compute the mean of only those absolute variances that were actually calculated (columns exist)
+        df['AVERAGE_MONTHLY_SPREAD_SCORE'] = df[monthly_af_variance_cols].abs().mean(axis=1)
     else:
-        df['TOTAL_MONTHLY_SPREAD_SCORE'] = 0
+        df['AVERAGE_MONTHLY_SPREAD_SCORE'] = 0 # Default to 0 if no monthly variance data
     # --- END NEW METHODOLOGY ---
 
     return df
@@ -233,10 +235,9 @@ if uploaded_file is not None:
 
         # --- Key Metrics Overview ---
         st.subheader("Key Metrics Overview")
-        # UPDATED: Adjusted columns for the first row after metric removals
+        # Adjusted columns for the first row after metric removals
         col1, col2, col3 = st.columns(3) # Projects, YTD Actuals, Sum of Forecasted Numbers
 
-        # Removed: Total Business Allocation, Total Current EAC, Total Capital Plan, Total Actuals To Date
         # Remaining and reordered metrics for first row
         with col1: # Reordered
             total_projects = len(filtered_df)
@@ -276,7 +277,7 @@ if uploaded_file is not None:
             f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
             'QE_FORECAST_VS_QE_PLAN', 'FORECAST_VS_BA',
             'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT',
-            'TOTAL_MONTHLY_SPREAD_SCORE' # Added new metric for project-level tracking
+            'AVERAGE_MONTHLY_SPREAD_SCORE' # UPDATED: New metric for project-level tracking
         ]
         # Filter to only include columns that actually exist in the filtered_df
         project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
@@ -287,7 +288,7 @@ if uploaded_file is not None:
                 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS',
                 f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN',
                 'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'NET_REALLOCATION_AMOUNT',
-                'TOTAL_MONTHLY_SPREAD_SCORE' # Format the new score as currency
+                'AVERAGE_MONTHLY_SPREAD_SCORE' # Format the new score as currency
             ]
         }
         # Add specific formats for variance columns if present
@@ -541,52 +542,52 @@ if uploaded_file is not None:
         # --- Project Manager Performance ---
         st.subheader("Project Manager Performance")
 
-        # UPDATED: Project Manager Performance based on TOTAL_MONTHLY_SPREAD_SCORE
-        if 'PROJECT_MANAGER' in filtered_df.columns and 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
+        # UPDATED: Project Manager Performance based on AVERAGE_MONTHLY_SPREAD_SCORE
+        if 'PROJECT_MANAGER' in filtered_df.columns and 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
             pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
-                Total_Monthly_Spread=('TOTAL_MONTHLY_SPREAD_SCORE', 'sum'),
+                Total_Average_Monthly_Spread=('AVERAGE_MONTHLY_SPREAD_SCORE', 'sum'), # Sum the averages for managers
                 Number_of_Projects=('PROJECT_NAME', 'count') # Added count of projects for context
             ).reset_index()
 
-            # Rank by Total_Monthly_Spread (lower is better)
-            pm_performance = pm_performance.sort_values('Total_Monthly_Spread')
+            # Rank by Total_Average_Monthly_Spread (lower is better)
+            pm_performance = pm_performance.sort_values('Total_Average_Monthly_Spread')
 
-            st.write("#### Top 5 Project Managers (Closest to Monthly Forecasts)")
+            st.write("#### Top 5 Project Managers (Lowest Total Avg. Monthly Spread)")
             st.dataframe(pm_performance.head(5).style.format({
-                'Total_Monthly_Spread': "${:,.2f}"
+                'Total_Average_Monthly_Spread': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
 
-            st.write("#### Bottom 5 Project Managers (Furthest from Monthly Forecasts)")
-            st.dataframe(pm_performance.tail(5).sort_values('Total_Monthly_Spread', ascending=False).style.format({
-                'Total_Monthly_Spread': "${:,.2f}"
+            st.write("#### Bottom 5 Project Managers (Highest Total Avg. Monthly Spread)")
+            st.dataframe(pm_performance.tail(5).sort_values('Total_Average_Monthly_Spread', ascending=False).style.format({
+                'Total_Average_Monthly_Spread': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
         else:
-            st.info("Required columns for Project Manager Performance (PROJECT_MANAGER, TOTAL_MONTHLY_SPREAD_SCORE) not found.")
+            st.info("Required columns for Project Manager Performance (PROJECT_MANAGER, AVERAGE_MONTHLY_SPREAD_SCORE) not found.")
 
         st.markdown("---")
 
         # --- Project Performance ---
         st.subheader("Project Performance")
 
-        # UPDATED: Project Performance based on TOTAL_MONTHLY_SPREAD_SCORE
-        if 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
-            project_performance_ranked = filtered_df.sort_values('TOTAL_MONTHLY_SPREAD_SCORE')
+        # UPDATED: Project Performance based on AVERAGE_MONTHLY_SPREAD_SCORE
+        if 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
+            project_performance_ranked = filtered_df.sort_values('AVERAGE_MONTHLY_SPREAD_SCORE')
 
-            st.write("#### Top 5 Best Behaving Projects (Closest to Monthly Forecasts)")
+            st.write("#### Top 5 Best Behaving Projects (Lowest Avg. Monthly Spread)")
             st.dataframe(project_performance_ranked.head(5)[[
-                'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE' # Display only relevant columns
+                'PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE' # Display only relevant columns
             ]].style.format({
-                'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
+                'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
 
-            st.write("#### Bottom 5 Worst Behaving Projects (Furthest from Monthly Forecasts)")
-            st.dataframe(project_performance_ranked.tail(5).sort_values('TOTAL_MONTHLY_SPREAD_SCORE', ascending=False)[[
-                'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE' # Display only relevant columns
+            st.write("#### Bottom 5 Worst Behaving Projects (Highest Avg. Monthly Spread)")
+            st.dataframe(project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[[
+                'PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE' # Display only relevant columns
             ]].style.format({
-                'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
+                'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"
             }), use_container_width=True, hide_index=True)
         else:
-            st.info("Column 'TOTAL_MONTHLY_SPREAD_SCORE' not found for Project Performance analysis.")
+            st.info("Column 'AVERAGE_MONTHLY_SPREAD_SCORE' not found for Project Performance analysis.")
 
 
         st.markdown("---")
@@ -600,7 +601,7 @@ if uploaded_file is not None:
             filtered_df: pd.DataFrame,
             total_projects: int,
             sum_actual_spend_ytd: float,
-            sum_of_forecasted_numbers_sum: float, # UPDATED: Parameter name
+            sum_of_forecasted_numbers_sum: float,
             run_rate_per_month: float,
             capital_underspend: float,
             capital_overspend: float,
@@ -754,22 +755,22 @@ if uploaded_file is not None:
 
             # Add Project Manager Performance to report
             pm_report_html = ""
-            if 'PROJECT_MANAGER' in filtered_df.columns and 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
+            if 'PROJECT_MANAGER' in filtered_df.columns and 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
                 pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
-                    Total_Monthly_Spread=('TOTAL_MONTHLY_SPREAD_SCORE', 'sum'),
+                    Total_Average_Monthly_Spread=('AVERAGE_MONTHLY_SPREAD_SCORE', 'sum'),
                     Number_of_Projects=('PROJECT_NAME', 'count')
                 ).reset_index()
 
-                pm_performance_sorted = pm_performance.sort_values('Total_Monthly_Spread')
+                pm_performance_sorted = pm_performance.sort_values('Total_Average_Monthly_Spread')
 
-                pm_report_html += "<h3>Top 5 Project Managers (Closest to Monthly Forecasts)</h3>"
+                pm_report_html += "<h3>Top 5 Project Managers (Lowest Total Avg. Monthly Spread)</h3>"
                 pm_report_html += pm_performance_sorted.head(5).style.format({
-                    'Total_Monthly_Spread': "${:,.2f}"
+                    'Total_Average_Monthly_Spread': "${:,.2f}"
                 }).to_html(index=False)
 
-                pm_report_html += "<h3>Bottom 5 Project Managers (Furthest from Monthly Forecasts)</h3>"
-                pm_report_html += pm_performance_sorted.tail(5).sort_values('Total_Monthly_Spread', ascending=False).style.format({
-                    'Total_Monthly_Spread': "${:,.2f}"
+                pm_report_html += "<h3>Bottom 5 Project Managers (Highest Total Avg. Monthly Spread)</h3>"
+                pm_report_html += pm_performance_sorted.tail(5).sort_values('Total_Average_Monthly_Spread', ascending=False).style.format({
+                    'Total_Average_Monthly_Spread': "${:,.2f}"
                 }).to_html(index=False)
             else:
                 pm_report_html += "<p>Required columns for Project Manager Performance not found.</p>"
@@ -781,24 +782,24 @@ if uploaded_file is not None:
 
             # Add Project Performance to report
             project_perf_report_html = ""
-            if 'TOTAL_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
-                project_performance_ranked = filtered_df.sort_values('TOTAL_MONTHLY_SPREAD_SCORE')
+            if 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
+                project_performance_ranked = filtered_df.sort_values('AVERAGE_MONTHLY_SPREAD_SCORE')
 
-                project_perf_report_html += "<h3>Top 5 Best Behaving Projects (Closest to Monthly Forecasts)</h3>"
+                project_perf_report_html += "<h3>Top 5 Best Behaving Projects (Lowest Avg. Monthly Spread)</h3>"
                 project_perf_report_html += project_performance_ranked.head(5)[[
-                    'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE'
+                    'PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE'
                 ]].style.format({
-                    'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
+                    'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"
                 }).to_html(index=False)
 
-                project_perf_report_html += "<h3>Bottom 5 Worst Behaving Projects (Furthest from Monthly Forecasts)</h3>"
-                project_perf_report_html += project_performance_ranked.tail(5).sort_values('TOTAL_MONTHLY_SPREAD_SCORE', ascending=False)[[
-                    'PROJECT_NAME', 'TOTAL_MONTHLY_SPREAD_SCORE'
+                project_perf_report_html += "<h3>Bottom 5 Worst Behaving Projects (Highest Avg. Monthly Spread)</h3>"
+                project_perf_report_html += project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[[
+                    'PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE'
                 ]].style.format({
-                    'TOTAL_MONTHLY_SPREAD_SCORE': "${:,.2f}"
+                    'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"
                 }).to_html(index=False)
             else:
-                project_perf_report_html += "<p>Column 'TOTAL_MONTHLY_SPREAD_SCORE' not found for Project Performance analysis.</p>"
+                project_perf_report_html += "<p>Column 'AVERAGE_MONTHLY_SPREAD_SCORE' not found for Project Performance analysis.</p>"
 
             report_html_content += f"""
             <h2 class="section-title">Project Performance</h2>

@@ -1,11 +1,3 @@
-Okay, I will proceed with your requests:
-
-1.  **Remove "Total Actuals To Date"** from the "Key Metrics Overview" and the HTML report.
-2.  Change the metric name from "Total Future Forecast" to **"Sum Of Forecasted Numbers"**, and update its calculation to **sum all columns ending with `_F`** for the current year (i.e., the total annual forecast).
-
-Here's the recoded script with these changes applied:
-
-```python
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -883,4 +875,3 @@ st.markdown("---")
 with st.expander("View Application Source Code"):
     source_code = inspect.getsource(inspect.currentframe())
     st.code(source_code, language='python')
-```

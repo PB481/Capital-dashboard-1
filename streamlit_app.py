@@ -1,3 +1,11 @@
+Okay, I will proceed with your requests:
+
+1.  **Remove "Total Actuals To Date"** from the "Key Metrics Overview" and the HTML report.
+2.  Change the metric name from "Total Future Forecast" to **"Sum Of Forecasted Numbers"**, and update its calculation to **sum all columns ending with `_F`** for the current year (i.e., the total annual forecast).
+
+Here's the recoded script with these changes applied:
+
+```python
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -114,10 +122,12 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
 
     # Calculate total Actuals, Forecasts, and Plans for the current year
     df[f'TOTAL_{current_year}_ACTUALS'] = df[monthly_actuals_cols].sum(axis=1) if monthly_actuals_cols else 0
+    # TOTAL_FORECASTS for the year (sum of all _F columns)
     df[f'TOTAL_{current_year}_FORECASTS'] = df[monthly_forecasts_cols].sum(axis=1) if monthly_forecasts_cols else 0
     df[f'TOTAL_{current_year}_CAPITAL_PLAN'] = df[monthly_plan_cols].sum(axis=1) if monthly_plan_cols else 0
 
     # Calculate Total Actuals to Date (Prior Years + Current Year Actuals)
+    # This column is still calculated but won't be displayed in Key Metrics Overview
     if 'ALL_PRIOR_YEARS_ACTUALS' in df.columns:
         df['TOTAL_ACTUALS_TO_DATE'] = df['ALL_PRIOR_YEARS_ACTUALS'] + df[f'TOTAL_{current_year}_ACTUALS']
     else:
@@ -131,15 +141,10 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     ytd_actual_cols = [col for col in monthly_actuals_cols if int(col.split('_')[1]) <= current_month]
     df['SUM_ACTUAL_SPEND_YTD'] = df[ytd_actual_cols].sum(axis=1) if ytd_actual_cols else 0
 
-    # UPDATED: Calculate Total Future Forecast (from current month + 1 onwards)
-    future_forecast_cols = [
-        col for col in monthly_forecasts_cols
-        if int(col.split('_')[1]) > current_month # Only months after current month
-    ]
-    df['TOTAL_FUTURE_FORECAST'] = df[future_forecast_cols].sum(axis=1) if future_forecast_cols else 0
+    # UPDATED: 'Sum Of Forecasted Numbers' (Total Annual Forecast)
+    # This now sums ALL _F columns for the current year
+    df['SUM_OF_FORECASTED_NUMBERS'] = df[f'TOTAL_{current_year}_FORECASTS']
 
-    # Total Capital Plan (still calculated in the DataFrame but removed from main metrics display)
-    df['TOTAL_CAPITAL_PLAN_SUM'] = df[f'TOTAL_{current_year}_CAPITAL_PLAN']
 
     # Run rate per month based on actuals, forecast, and capital plans
     # Simplistic run rate: Total (Actuals + Forecasts) for the year divided by 12 months
@@ -213,23 +218,20 @@ if uploaded_file is not None:
 
         # --- Key Metrics Overview ---
         st.subheader("Key Metrics Overview")
-        # UPDATED: Reduced number of columns in the first row to reflect removed metrics
-        col1, col2, col3, col4 = st.columns(4) # Previously 7, now adjusted for 4 key metrics in first row
+        # UPDATED: Adjusted columns for the first row after metric removals
+        col1, col2, col3 = st.columns(3) # Was 4, now 3 (Projects, YTD Actuals, Sum of Forecasted Numbers)
 
-        # Removed: Total Business Allocation, Total Current EAC, Total Capital Plan
+        # Removed: Total Business Allocation, Total Current EAC, Total Capital Plan, Total Actuals To Date
         # Remaining and reordered metrics for first row
-        with col1:
+        with col1: # Reordered
             total_projects = len(filtered_df)
             st.metric(label="Number of Projects", value=total_projects)
-        with col2:
-            total_actuals_to_date = filtered_df['TOTAL_ACTUALS_TO_DATE'].sum() if 'TOTAL_ACTUALS_TO_DATE' in filtered_df.columns else 0
-            st.metric(label="Total Actuals To Date", value=f"${total_actuals_to_date:,.2f}")
-        with col3:
+        with col2: # Reordered
             sum_actual_spend_ytd = filtered_df['SUM_ACTUAL_SPEND_YTD'].sum() if 'SUM_ACTUAL_SPEND_YTD' in filtered_df.columns else 0
             st.metric(label="Sum Actual Spend (YTD)", value=f"${sum_actual_spend_ytd:,.2f}")
-        with col4: # UPDATED: Changed label and source column
-            total_future_forecast_sum = filtered_df['TOTAL_FUTURE_FORECAST'].sum() if 'TOTAL_FUTURE_FORECAST' in filtered_df.columns else 0
-            st.metric(label="Total Future Forecast", value=f"${total_future_forecast_sum:,.2f}")
+        with col3: # UPDATED: Changed label and source column
+            sum_of_forecasted_numbers_sum = filtered_df['SUM_OF_FORECASTED_NUMBERS'].sum() if 'SUM_OF_FORECASTED_NUMBERS' in filtered_df.columns else 0
+            st.metric(label="Sum Of Forecasted Numbers", value=f"${sum_of_forecasted_numbers_sum:,.2f}")
 
         # Metrics for the second row remain the same (Run Rate, Under/Over Spend, Net Reallocation)
         col_new_metrics1, col_new_metrics2, col_new_metrics3, col_new_metrics4 = st.columns(4)
@@ -612,10 +614,10 @@ if uploaded_file is not None:
         def generate_html_report(
             filtered_df: pd.DataFrame,
             # REMOVED: total_business_allocation: float, total_current_eac: float, total_capital_plan_sum: float,
-            total_actuals_to_date: float,
+            # REMOVED: total_actuals_to_date: float,
             total_projects: int,
             sum_actual_spend_ytd: float,
-            total_future_forecast_sum: float, # UPDATED: Changed parameter name
+            sum_of_forecasted_numbers_sum: float, # UPDATED: Changed parameter name
             run_rate_per_month: float,
             capital_underspend: float,
             capital_overspend: float,
@@ -663,10 +665,6 @@ if uploaded_file is not None:
     <h2 class="section-title">Key Metrics Overview</h2>
     <div class="metric-container">
         <div class="metric-box">
-            <div class="metric-label">Total Actuals To Date</div>
-            <div class="metric-value">${total_actuals_to_date:,.2f}</div>
-        </div>
-        <div class="metric-box">
             <div class="metric-label">Number of Projects</div>
             <div class="metric-value">{total_projects}</div>
         </div>
@@ -675,7 +673,7 @@ if uploaded_file is not None:
             <div class="metric-value">${sum_actual_spend_ytd:,.2f}</div>
         </div>
         <div class="metric-box">
-            <div class="metric-label">Total Future Forecast</div> <div class="metric-value">${total_future_forecast_sum:,.2f}</div> </div>
+            <div class="metric-label">Sum Of Forecasted Numbers</div> <div class="metric-value">${sum_of_forecasted_numbers_sum:,.2f}</div> </div>
         <div class="metric-box">
             <div class="metric-label">Average Run Rate / Month</div>
             <div class="metric-value">${run_rate_per_month:,.2f}</div>
@@ -859,8 +857,8 @@ if uploaded_file is not None:
 
             report_content = generate_html_report(
                 filtered_df,
-                total_actuals_to_date, total_projects,
-                sum_actual_spend_ytd, total_future_forecast_sum, # UPDATED: Changed parameter name
+                total_projects,
+                sum_actual_spend_ytd, sum_of_forecasted_numbers_sum, # UPDATED: Changed argument name
                 run_rate_per_month, capital_underspend, capital_overspend, net_reallocation_amount,
                 report_monthly_combined_df, fig_monthly_trends, fig_qe_variance, fig_ba_variance,
                 fig_portfolio_alloc, fig_sub_portfolio_alloc, fig_brs_alloc,
@@ -885,3 +883,4 @@ st.markdown("---")
 with st.expander("View Application Source Code"):
     source_code = inspect.getsource(inspect.currentframe())
     st.code(source_code, language='python')
+```

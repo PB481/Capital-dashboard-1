@@ -311,7 +311,6 @@ if uploaded_file is not None:
 
         monthly_actuals_cols_filtered = []
         monthly_forecasts_cols_filtered = []
-        monthly_plan_cols_filtered = []
 
         for col in filtered_df.columns:
             match = monthly_col_pattern_filtered.match(col)
@@ -321,8 +320,6 @@ if uploaded_file is not None:
                     monthly_actuals_cols_filtered.append(col)
                 elif col_type == 'F':
                     monthly_forecasts_cols_filtered.append(col)
-                elif col_type == 'CP':
-                    monthly_plan_cols_filtered.append(col)
         # --- END Refined monthly column identification ---
 
         monthly_combined_df = pd.DataFrame()
@@ -347,15 +344,6 @@ if uploaded_file is not None:
         if forecasts_data_points and sum(d['Amount'] for d in forecasts_data_points) != 0: # Only add if sum is not zero
             data_to_concat.append(pd.DataFrame(forecasts_data_points))
 
-        # Capital Plan (all months)
-        plan_data_points = []
-        for col in monthly_plan_cols_filtered:
-            month_num = int(col.split('_')[1])
-            plan_data_points.append({'Month': f'{current_year_str}_{month_num:02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Capital Plan'})
-        if plan_data_points and sum(d['Amount'] for d in plan_data_points) != 0: # Only add if sum is not zero
-            data_to_concat.append(pd.DataFrame(plan_data_points))
-
-
         if data_to_concat:
             monthly_combined_df = pd.concat(data_to_concat)
 
@@ -369,23 +357,43 @@ if uploaded_file is not None:
                 x='Month_Sort',
                 y='Amount',
                 color='Type',
-                title=f'Monthly Capital Trends (Actuals, Forecasts, Plan) for {current_year_str}',
+                title=f'Monthly Capital Trends (Actuals, Forecasts) for {current_year_str}',
                 labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
                 line_shape='linear',
                 markers=True
             )
+            
+            # Add a dotted black line connecting actuals and forecasts
+            if not monthly_combined_df.empty:
+                # Create a single dataframe with all months for the connecting line
+                line_df = monthly_combined_df.groupby('Month_Sort')['Amount'].sum().reset_index()
+                line_df = line_df.sort_values('Month_Sort')
+                
+                fig_monthly_trends.add_trace(go.Scatter(
+                    x=line_df['Month_Sort'],
+                    y=line_df['Amount'],
+                    mode='lines',
+                    line=dict(color='black', dash='dot'),
+                    name='Trend'
+                ))
+                
             fig_monthly_trends.update_layout(hovermode="x unified", legend_title_text='Type')
             fig_monthly_trends.update_xaxes(title_text=f"Month ({current_year_str})")
             fig_monthly_trends.update_yaxes(title_text="Amount ($)")
             st.plotly_chart(fig_monthly_trends, use_container_width=True)
         else:
-            st.warning(f"No {current_year_str} monthly actuals, forecasts, or plan data found for trend analysis after filtering.")
+            st.warning(f"No {current_year_str} monthly actuals or forecasts data found for trend analysis after filtering.")
             fig_monthly_trends = None # Explicitly set to None if no data
 
         st.markdown("---")
 
         # --- Variance Analysis ---
         st.subheader("Variance Analysis")
+        st.markdown("""
+        **Variance** is the difference between planned and actual numbers. The following charts show two key types of variance:
+        - **QE Forecast vs QE Plan:** This shows the difference between the forecasted spending for a quarter and the planned capital for that quarter. A positive variance means the forecast is higher than the plan (potential overspend), while a negative variance indicates the forecast is lower than the plan (potential underspend).
+        - **Forecast vs Business Allocation:** This compares the total forecasted spending for the year against the overall business allocation for each project. This helps in identifying which projects are forecasted to be over or under budget.
+        """)
         col_var1, col_var2 = st.columns(2)
         fig_qe_variance = None
         fig_ba_variance = None
@@ -538,34 +546,7 @@ if uploaded_file is not None:
             st.info("Select a project from the dropdown to see its detailed monthly financials.")
 
         st.markdown("---")
-
-        # --- Project Manager Performance ---
-        st.subheader("Project Manager Performance")
-
-        # UPDATED: Project Manager Performance based on AVERAGE_MONTHLY_SPREAD_SCORE
-        if 'PROJECT_MANAGER' in filtered_df.columns and 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
-            pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
-                Total_Average_Monthly_Spread=('AVERAGE_MONTHLY_SPREAD_SCORE', 'sum'), # Sum the averages for managers
-                Number_of_Projects=('PROJECT_NAME', 'count') # Added count of projects for context
-            ).reset_index()
-
-            # Rank by Total_Average_Monthly_Spread (lower is better)
-            pm_performance = pm_performance.sort_values('Total_Average_Monthly_Spread')
-
-            st.write("#### Top 5 Project Managers (Lowest Total Avg. Monthly Spread)")
-            st.dataframe(pm_performance.head(5).style.format({
-                'Total_Average_Monthly_Spread': "${:,.2f}"
-            }), use_container_width=True, hide_index=True)
-
-            st.write("#### Bottom 5 Project Managers (Highest Total Avg. Monthly Spread)")
-            st.dataframe(pm_performance.tail(5).sort_values('Total_Average_Monthly_Spread', ascending=False).style.format({
-                'Total_Average_Monthly_Spread': "${:,.2f}"
-            }), use_container_width=True, hide_index=True)
-        else:
-            st.info("Required columns for Project Manager Performance (PROJECT_MANAGER, AVERAGE_MONTHLY_SPREAD_SCORE) not found.")
-
-        st.markdown("---")
-
+        
         # --- Project Performance ---
         st.subheader("Project Performance")
 
@@ -752,33 +733,6 @@ if uploaded_file is not None:
                 <h2 class="section-title">Detailed Project Financials</h2>
                 <p>No project selected for detailed view in the report.</p>
                 """
-
-            # Add Project Manager Performance to report
-            pm_report_html = ""
-            if 'PROJECT_MANAGER' in filtered_df.columns and 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
-                pm_performance = filtered_df.groupby('PROJECT_MANAGER').agg(
-                    Total_Average_Monthly_Spread=('AVERAGE_MONTHLY_SPREAD_SCORE', 'sum'),
-                    Number_of_Projects=('PROJECT_NAME', 'count')
-                ).reset_index()
-
-                pm_performance_sorted = pm_performance.sort_values('Total_Average_Monthly_Spread')
-
-                pm_report_html += "<h3>Top 5 Project Managers (Lowest Total Avg. Monthly Spread)</h3>"
-                pm_report_html += pm_performance_sorted.head(5).style.format({
-                    'Total_Average_Monthly_Spread': "${:,.2f}"
-                }).to_html(index=False)
-
-                pm_report_html += "<h3>Bottom 5 Project Managers (Highest Total Avg. Monthly Spread)</h3>"
-                pm_report_html += pm_performance_sorted.tail(5).sort_values('Total_Average_Monthly_Spread', ascending=False).style.format({
-                    'Total_Average_Monthly_Spread': "${:,.2f}"
-                }).to_html(index=False)
-            else:
-                pm_report_html += "<p>Required columns for Project Manager Performance not found.</p>"
-
-            report_html_content += f"""
-            <h2 class="section-title">Project Manager Performance</h2>
-            {pm_report_html}
-            """
 
             # Add Project Performance to report
             project_perf_report_html = ""

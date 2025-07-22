@@ -352,8 +352,11 @@ if uploaded_file is not None:
             monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month'], categories=month_order, ordered=True)
             monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
 
+            # Replace 0 with NaN to create gaps in the line plot
+            monthly_combined_df['Amount'] = monthly_combined_df['Amount'].replace(0, pd.NA)
+
             fig_monthly_trends = px.line(
-                monthly_combined_df,
+                monthly_combined_df.dropna(subset=['Amount']),
                 x='Month_Sort',
                 y='Amount',
                 color='Type',
@@ -363,10 +366,10 @@ if uploaded_file is not None:
                 markers=True
             )
             
-            # Add a dotted black line connecting actuals and forecasts
+            # Add a dotted black line connecting actuals and forecasts, skipping zero-value months
             if not monthly_combined_df.empty:
-                # Create a single dataframe with all months for the connecting line
                 line_df = monthly_combined_df.groupby('Month_Sort')['Amount'].sum().reset_index()
+                line_df['Amount'] = line_df['Amount'].replace(0, pd.NA)
                 line_df = line_df.sort_values('Month_Sort')
                 
                 fig_monthly_trends.add_trace(go.Scatter(
@@ -374,7 +377,8 @@ if uploaded_file is not None:
                     y=line_df['Amount'],
                     mode='lines',
                     line=dict(color='black', dash='dot'),
-                    name='Trend'
+                    name='Trend',
+                    connectgaps=True  # This will connect points across NaN values
                 ))
                 
             fig_monthly_trends.update_layout(hovermode="x unified", legend_title_text='Type')

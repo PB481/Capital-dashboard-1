@@ -33,7 +33,6 @@ def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
     Loads and preprocesses data from a CSV or Excel file.
     """
     try:
-        # UPDATED: Handle both CSV and Excel files
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
@@ -137,10 +136,8 @@ def generate_html_report(metrics, figures, tables, comments, project_details_htm
     """Generates a comprehensive HTML report of the dashboard state."""
     monthly_trends_html = figures['monthly_trends'].to_html(full_html=False, include_plotlyjs='cdn') if figures.get('monthly_trends') else '<p>No monthly trend data available.</p>'
     
-    # Function to create a comment block if comment exists
     def create_comment_block(title, comment_text):
         if comment_text and comment_text.strip():
-            # Replace newline characters with <br> for HTML display
             comment_text_html = comment_text.replace('\n', '<br>')
             return f"<h3>{title}</h3><p style='white-space: pre-wrap; background-color:#f0f2f6; padding: 10px; border-radius: 5px;'>{comment_text_html}</p>"
         return ""
@@ -182,16 +179,13 @@ def generate_excel_report(metrics, tables, comments):
     """Generates a multi-sheet Excel report."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # Summary and Comments Sheet
         summary_df = pd.DataFrame([metrics])
         comments_df = pd.DataFrame.from_dict(comments, orient='index', columns=['Comments'])
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
         comments_df.to_excel(writer, sheet_name='Summary', startrow=len(summary_df) + 2)
 
-        # Data sheets
         for name, df in tables.items():
             if not df.empty:
-                # Use a valid sheet name
                 sheet_name = re.sub(r'[\\/*?:"<>|]', "", name)[:31]
                 df.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -226,7 +220,6 @@ if uploaded_file is not None:
         if filtered_df.empty:
             st.warning("No projects match the selected filters."); st.stop()
 
-        # Data Calculation for UI
         total_projects = len(filtered_df)
         sum_actual_spend_ytd = filtered_df['SUM_ACTUAL_SPEND_YTD'].sum()
         sum_of_forecasted_numbers_sum = filtered_df['SUM_OF_FORECASTED_NUMBERS'].sum()
@@ -235,7 +228,6 @@ if uploaded_file is not None:
         capital_overspend = filtered_df['CAPITAL_OVERSPEND'].sum()
         net_reallocation_amount = filtered_df['NET_REALLOCATION_AMOUNT'].sum()
 
-        # --- UI Sections ---
         st.subheader("Key Metrics Overview")
         col1, col2, col3 = st.columns(3)
         col1.metric("Number of Projects", total_projects)
@@ -251,11 +243,10 @@ if uploaded_file is not None:
         st.subheader("Project Details")
         project_table_cols = [ 'PORTFOLIO_OBS_LEVEL1', 'SUB_PORTFOLIO_OBS_LEVEL2', 'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION', 'FUND_DECISION', 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS', f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN', 'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'AVERAGE_MONTHLY_SPREAD_SCORE' ]
         project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
-        financial_format_map = { col: "${:,.2f}" for col in project_table_cols_present if 'ACTUALS' in col or 'FORECASTS' in col or 'PLAN' in col or 'ALLOCATION' in col or 'EAC' in col or 'SPEND' in col or 'AMOUNT' in col or 'SCORE' in col }
+        financial_format_map = { col: "${:,.2f}" for col in project_table_cols_present if any(keyword in col for keyword in ['ACTUALS', 'FORECASTS', 'PLAN', 'ALLOCATION', 'EAC', 'SPEND', 'AMOUNT', 'SCORE'])}
         st.dataframe(filtered_df[project_table_cols_present].style.format(financial_format_map), use_container_width=True, hide_index=True)
         st.markdown("---")
 
-        # --- CORRECTED: Monthly Spend Trends Line Graph Section ---
         st.subheader(f"{current_year} Monthly Spend Trends")
         monthly_col_pattern_filtered = re.compile(rf'^{current_year_str}_\d{{2}}_([AF])$')
         monthly_actuals_cols_filtered = [col for col in filtered_df.columns if monthly_col_pattern_filtered.match(col) and col.endswith('_A')]
@@ -273,23 +264,12 @@ if uploaded_file is not None:
             monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
             monthly_combined_df['Amount'] = monthly_combined_df['Amount'].replace(0, pd.NA)
 
-            fig_monthly_trends = px.line(
-                monthly_combined_df.dropna(subset=['Amount']),
-                x='Month_Sort', y='Amount', color='Type',
-                title=f'Monthly Capital Trends for {current_year_str}',
-                labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
-                markers=True
-            )
+            fig_monthly_trends = px.line(monthly_combined_df.dropna(subset=['Amount']), x='Month_Sort', y='Amount', color='Type', title=f'Monthly Capital Trends for {current_year_str}', labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'}, markers=True)
             
             line_df = monthly_combined_df.groupby('Month_Sort')['Amount'].sum(min_count=1).reset_index()
-            fig_monthly_trends.add_trace(go.Scatter(
-                x=line_df['Month_Sort'], y=line_df['Amount'], mode='lines',
-                line=dict(color='black', dash='dot'), name='Trend', connectgaps=True
-            ))
-            # THIS LINE WAS MISSING:
+            fig_monthly_trends.add_trace(go.Scatter(x=line_df['Month_Sort'], y=line_df['Amount'], mode='lines', line=dict(color='black', dash='dot'), name='Trend', connectgaps=True))
             st.plotly_chart(fig_monthly_trends, use_container_width=True)
         else:
-            # THIS WARNING WAS ALSO MISSING:
             st.warning(f"No monthly actuals or forecasts data found for trend analysis.")
         st.markdown("---")
 
@@ -344,7 +324,7 @@ if uploaded_file is not None:
 
         project_details = None
         fig_project_monthly = None
-        monthly_breakdown_df = pd.DataFrame() # Initialize empty
+        monthly_breakdown_df = pd.DataFrame()
         if selected_project_name != 'Select a Project':
             project_details = filtered_df[filtered_df['PROJECT_NAME'] == selected_project_name].iloc[0]
             st.write(f"### Details for: {project_details['PROJECT_NAME']}")
@@ -386,8 +366,16 @@ if uploaded_file is not None:
             st.session_state.reports_ready = True
 
         if st.session_state.get('reports_ready', False):
-            # Prepare data for reports
-            metrics_data = { "Number of Projects": total_projects, "Sum Actual Spend (YTD)": f"${sum_actual_spend_ytd:,.2f}", "Sum Of Forecasted Numbers": f"${sum_of_forecasted_numbers_sum:,.2f}", "Avg Run Rate / Month": f"${run_rate_per_month:,.2f}", "Total Potential Underspend": f"${capital_underspend:,.2f}", "Total Potential Overspend": f"${capital_overspend:,.2f}", "Net Reallocation": f"${net_reallocation_amount:,.2f}" }
+            metrics_data_display = { "Number of Projects": total_projects, "Sum Actual Spend (YTD)": f"${sum_actual_spend_ytd:,.2f}", "Sum Of Forecasted Numbers": f"${sum_of_forecasted_numbers_sum:,.2f}", "Avg Run Rate / Month": f"${run_rate_per_month:,.2f}", "Total Potential Underspend": f"${capital_underspend:,.2f}", "Total Potential Overspend": f"${capital_overspend:,.2f}", "Net Reallocation": f"${net_reallocation_amount:,.2f}" }
+            
+            # --- BUG FIX STARTS HERE ---
+            # Prepare a separate, clean dictionary for the Excel export
+            metrics_data_excel = {
+                k: (v.replace('$', '').replace(',', '') if isinstance(v, str) else v)
+                for k, v in metrics_data_display.items()
+            }
+            # --- BUG FIX ENDS HERE ---
+
             figures_data = { 'monthly_trends': fig_monthly_trends, 'total_spend': fig_total_spend_variance, 'avg_spend': fig_avg_spend_variance }
             
             tables_data_styled = {
@@ -398,13 +386,7 @@ if uploaded_file is not None:
                 'bottom_5': project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False)
             }
 
-            excel_tables = {
-                'Project_Details': filtered_df[project_table_cols_present],
-                'Over-Spend_Projects': overspend_projects,
-                'Under-Spend_Projects': underspend_projects,
-                'Performance_Rankings': project_performance_ranked
-            }
-            
+            excel_tables = { 'Project_Details': filtered_df[project_table_cols_present], 'Over-Spend_Projects': overspend_projects, 'Under-Spend_Projects': underspend_projects, 'Performance_Rankings': project_performance_ranked }
             comments_data = { 'variance': st.session_state.comment_variance, 'impact': st.session_state.comment_impact, 'bottom5': st.session_state.comment_bottom5 }
             
             project_details_report_html = None
@@ -413,11 +395,10 @@ if uploaded_file is not None:
                 project_table_html = monthly_breakdown_df.style.format({'Actuals': "${:,.2f}", 'Forecasts': "${:,.2f}", 'Capital Plan': "${:,.2f}"}).to_html(index=False)
                 project_chart_html = fig_project_monthly.to_html(full_html=False, include_plotlyjs='cdn')
                 project_details_report_html = f"""<h2 class="section-title">Detailed Financials for {selected_project_name}</h2>{project_metrics_html}<h3>{current_year_str} Monthly Breakdown</h3>{project_table_html}<div class="chart-container">{project_chart_html}</div>"""
-                excel_tables[f'Detail_{selected_project_name}'] = monthly_breakdown_df
+                excel_tables[f'Detail_{selected_project_name.replace(" ", "_")[:20]}'] = monthly_breakdown_df
 
-            # Generate report content
-            html_report = generate_html_report(metrics_data, figures_data, tables_data_styled, comments_data, project_details_report_html)
-            excel_report = generate_excel_report({k: v.replace('$', '').replace(',', '') for k, v in metrics_data.items()}, excel_tables, comments_data)
+            html_report = generate_html_report(metrics_data_display, figures_data, tables_data_styled, comments_data, project_details_report_html)
+            excel_report = generate_excel_report(metrics_data_excel, excel_tables, comments_data)
 
             st.info("Your reports are ready to download below.")
             dl1, dl2 = st.columns(2)

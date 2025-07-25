@@ -140,7 +140,9 @@ def generate_html_report(metrics, figures, tables, comments, project_details_htm
     # Function to create a comment block if comment exists
     def create_comment_block(title, comment_text):
         if comment_text and comment_text.strip():
-            return f"<h3>{title}</h3><p style='white-space: pre-wrap; background-color:#f0f2f6; padding: 10px; border-radius: 5px;'>{comment_text}</p>"
+            # Replace newline characters with <br> for HTML display
+            comment_text_html = comment_text.replace('\n', '<br>')
+            return f"<h3>{title}</h3><p style='white-space: pre-wrap; background-color:#f0f2f6; padding: 10px; border-radius: 5px;'>{comment_text_html}</p>"
         return ""
 
     report_html = f"""
@@ -188,7 +190,10 @@ def generate_excel_report(metrics, tables, comments):
 
         # Data sheets
         for name, df in tables.items():
-            df.to_excel(writer, sheet_name=name.replace(' ', '_')[:31], index=False)
+            if not df.empty:
+                # Use a valid sheet name
+                sheet_name = re.sub(r'[\\/*?:"<>|]', "", name)[:31]
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
 
     return output.getvalue()
 
@@ -196,25 +201,23 @@ def generate_excel_report(metrics, tables, comments):
 st.title("💰 Capital Project Portfolio Dashboard")
 st.markdown("This dashboard provides an interactive overview of your capital projects, allowing you to track financials, monitor trends, and identify variances.")
 
-# UPDATED: File uploader now accepts CSV and XLSX
 uploaded_file = st.file_uploader("Upload your Capital Project CSV or Excel file", type=["csv", "xlsx"])
 
 if uploaded_file is not None:
-    # Reset report readiness when a new file is uploaded
     st.session_state.reports_ready = False
     df = load_data(uploaded_file)
     if not df.empty:
         st.sidebar.header("Filter Projects")
-        # --- FILTERS (Logic is unchanged) ---
         filter_columns = { "PORTFOLIO_OBS_LEVEL1": "Select Portfolio Level", "SUB_PORTFOLIO_OBS_LEVEL2": "Select Sub-Portfolio Level", "PROJECT_MANAGER": "Select Project Manager", "BRS_CLASSIFICATION": "Select BRS Classification", "FUND_DECISION": "Select Fund Decision" }
         selected_filters = {}
         for col_name, display_name in filter_columns.items():
             if col_name in df.columns:
-                options = ['All'] + df[col_name].dropna().unique().tolist()
+                options = ['All'] + sorted(df[col_name].dropna().unique())
                 selected_filters[col_name] = st.sidebar.selectbox(display_name, options, on_change=lambda: st.session_state.update(reports_ready=False))
             else:
                 if col_name == "FUND_DECISION": st.sidebar.info(f"Column '{col_name}' not found.")
                 selected_filters[col_name] = 'All'
+        
         filtered_df = df.copy()
         for col_name, selected_value in selected_filters.items():
             if selected_value != 'All' and col_name in filtered_df.columns:
@@ -223,7 +226,7 @@ if uploaded_file is not None:
         if filtered_df.empty:
             st.warning("No projects match the selected filters."); st.stop()
 
-        # --- Data Calculation for UI ---
+        # Data Calculation for UI
         total_projects = len(filtered_df)
         sum_actual_spend_ytd = filtered_df['SUM_ACTUAL_SPEND_YTD'].sum()
         sum_of_forecasted_numbers_sum = filtered_df['SUM_OF_FORECASTED_NUMBERS'].sum()
@@ -252,21 +255,65 @@ if uploaded_file is not None:
         st.dataframe(filtered_df[project_table_cols_present].style.format(financial_format_map), use_container_width=True, hide_index=True)
         st.markdown("---")
 
+        # --- CORRECTED: Monthly Spend Trends Line Graph Section ---
         st.subheader(f"{current_year} Monthly Spend Trends")
-        # (Logic for this chart is unchanged)
-        # ...
+        monthly_col_pattern_filtered = re.compile(rf'^{current_year_str}_\d{{2}}_([AF])$')
+        monthly_actuals_cols_filtered = [col for col in filtered_df.columns if monthly_col_pattern_filtered.match(col) and col.endswith('_A')]
+        monthly_forecasts_cols_filtered = [col for col in filtered_df.columns if monthly_col_pattern_filtered.match(col) and col.endswith('_F')]
+        
+        actuals_data = [{'Month': f'{current_year_str}_{int(col.split("_")[1]):02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Actuals'} for col in monthly_actuals_cols_filtered if int(col.split("_")[1]) <= current_month]
+        forecasts_data = [{'Month': f'{current_year_str}_{int(col.split("_")[1]):02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Forecasts'} for col in monthly_forecasts_cols_filtered if int(col.split("_")[1]) > current_month]
+        
+        monthly_combined_df = pd.DataFrame(actuals_data + forecasts_data)
+        
+        fig_monthly_trends = None
+        if not monthly_combined_df.empty:
+            month_order = [f'{current_year_str}_{i:02d}' for i in range(1, 13)]
+            monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month'], categories=month_order, ordered=True)
+            monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
+            monthly_combined_df['Amount'] = monthly_combined_df['Amount'].replace(0, pd.NA)
+
+            fig_monthly_trends = px.line(
+                monthly_combined_df.dropna(subset=['Amount']),
+                x='Month_Sort', y='Amount', color='Type',
+                title=f'Monthly Capital Trends for {current_year_str}',
+                labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'},
+                markers=True
+            )
+            
+            line_df = monthly_combined_df.groupby('Month_Sort')['Amount'].sum(min_count=1).reset_index()
+            fig_monthly_trends.add_trace(go.Scatter(
+                x=line_df['Month_Sort'], y=line_df['Amount'], mode='lines',
+                line=dict(color='black', dash='dot'), name='Trend', connectgaps=True
+            ))
+            # THIS LINE WAS MISSING:
+            st.plotly_chart(fig_monthly_trends, use_container_width=True)
+        else:
+            # THIS WARNING WAS ALSO MISSING:
+            st.warning(f"No monthly actuals or forecasts data found for trend analysis.")
         st.markdown("---")
 
         st.subheader("🔎 Project Spend Variance Analysis")
         st.markdown("These charts compare spend for each project, sorted to show the greatest difference between what was spent and what was forecasted.")
         num_projects_to_show = st.slider("Select number of projects to display in variance charts:", 5, min(50, total_projects), min(15, total_projects), 5, on_change=lambda: st.session_state.update(reports_ready=False))
         variance_df = filtered_df.reindex(filtered_df['TOTAL_SPEND_VARIANCE'].abs().sort_values(ascending=False).index).head(num_projects_to_show)
+        
         c1, c2 = st.columns(2)
         with c1:
-            st.write(f"**Total Spend: Actuals vs. Forecast**"); fig_total_spend_variance = px.bar(variance_df.melt(id_vars='PROJECT_NAME', value_vars=[f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS'], var_name='Spend Type', value_name='Amount').replace({f'TOTAL_{current_year}_ACTUALS': 'Total Actuals', f'TOTAL_{current_year}_FORECASTS': 'Total Forecasts'}), y='PROJECT_NAME', x='Amount', color='Spend Type', barmode='group', orientation='h', height=max(400, num_projects_to_show * 35)).update_layout(yaxis={'categoryorder':'total ascending'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)); st.plotly_chart(fig_total_spend_variance, use_container_width=True)
+            st.write(f"**Total Spend: Actuals vs. Forecast**")
+            melted_total = variance_df.melt(id_vars='PROJECT_NAME', value_vars=[f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS'], var_name='Spend Type', value_name='Amount')
+            melted_total['Spend Type'] = melted_total['Spend Type'].replace({f'TOTAL_{current_year}_ACTUALS': 'Total Actuals', f'TOTAL_{current_year}_FORECASTS': 'Total Forecasts'})
+            fig_total_spend_variance = px.bar(melted_total, y='PROJECT_NAME', x='Amount', color='Spend Type', barmode='group', orientation='h', height=max(400, num_projects_to_show * 35))
+            fig_total_spend_variance.update_layout(yaxis={'categoryorder':'total ascending'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig_total_spend_variance, use_container_width=True)
         with c2:
-            st.write(f"**Average Monthly Spend**"); fig_avg_spend_variance = px.bar(variance_df.melt(id_vars='PROJECT_NAME', value_vars=['AVG_ACTUAL_SPEND', 'AVG_FORECAST_SPEND'], var_name='Spend Type', value_name='Amount').replace({'AVG_ACTUAL_SPEND': 'Avg Actuals (YTD)', 'AVG_FORECAST_SPEND': 'Avg Forecasts (Annual)'}), y='PROJECT_NAME', x='Amount', color='Spend Type', barmode='group', orientation='h', height=max(400, num_projects_to_show * 35)).update_layout(yaxis={'categoryorder':'total ascending'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)); st.plotly_chart(fig_avg_spend_variance, use_container_width=True)
-        # NEW: Comment box for this section
+            st.write(f"**Average Monthly Spend**")
+            melted_avg = variance_df.melt(id_vars='PROJECT_NAME', value_vars=['AVG_ACTUAL_SPEND', 'AVG_FORECAST_SPEND'], var_name='Spend Type', value_name='Amount')
+            melted_avg['Spend Type'] = melted_avg['Spend Type'].replace({'AVG_ACTUAL_SPEND': 'Avg Actuals (YTD)', 'AVG_FORECAST_SPEND': 'Avg Forecasts (Annual)'})
+            fig_avg_spend_variance = px.bar(melted_avg, y='PROJECT_NAME', x='Amount', color='Spend Type', barmode='group', orientation='h', height=max(400, num_projects_to_show * 35))
+            fig_avg_spend_variance.update_layout(yaxis={'categoryorder':'total ascending'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig_avg_spend_variance, use_container_width=True)
+        
         st.text_area("Add comments for the Spend Variance section:", key="comment_variance", on_change=lambda: st.session_state.update(reports_ready=False))
         st.markdown("---")
 
@@ -274,23 +321,53 @@ if uploaded_file is not None:
         overspend_projects = filtered_df[filtered_df['CAPITAL_OVERSPEND'] > 0].sort_values('CAPITAL_OVERSPEND', ascending=False)
         underspend_projects = filtered_df[filtered_df['CAPITAL_UNDERSPEND'] > 0].sort_values('CAPITAL_UNDERSPEND', ascending=False)
         currency_formatter = { 'BUSINESS_ALLOCATION': "${:,.2f}", f'TOTAL_{current_year}_FORECASTS': "${:,.2f}", 'CAPITAL_OVERSPEND': "${:,.2f}", 'CAPITAL_UNDERSPEND': "${:,.2f}" }
+        
         i1, i2 = st.columns(2)
         with i1:
-            st.write("#### Projects with Largest Forecasted Overspend"); st.markdown("These projects are forecasted to exceed their `BUSINESS_ALLOCATION`.")
+            st.write("#### Projects with Largest Forecasted Overspend")
+            st.markdown("These projects are forecasted to exceed their `BUSINESS_ALLOCATION`.")
             if not overspend_projects.empty: st.dataframe(overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format(currency_formatter), use_container_width=True, hide_index=True)
             else: st.info("No projects are currently forecasting an overspend.")
         with i2:
-            st.write("#### Projects with Largest Potential Underspend"); st.markdown("These projects have capital that could be reallocated.")
+            st.write("#### Projects with Largest Potential Underspend")
+            st.markdown("These projects have capital that could be reallocated.")
             if not underspend_projects.empty: st.dataframe(underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format(currency_formatter), use_container_width=True, hide_index=True)
             else: st.info("No projects are currently forecasting an underspend.")
+        
         if not overspend_projects.empty and not underspend_projects.empty: st.success(f"**Reallocation Suggestion:** There is a total potential underspend of **${capital_underspend:,.2f}** which could cover the total potential overspend of **${capital_overspend:,.2f}**.")
-        # NEW: Comment box for this section
         st.text_area("Add comments for the Budget Impact section:", key="comment_impact", on_change=lambda: st.session_state.update(reports_ready=False))
         st.markdown("---")
         
         st.subheader("Individual Project Financials")
-        # (Logic for this chart is unchanged)
-        # ...
+        project_names = ['Select a Project'] + sorted(filtered_df['PROJECT_NAME'].dropna().unique())
+        selected_project_name = st.selectbox("Select a project for a detailed monthly view:", project_names, on_change=lambda: st.session_state.update(reports_ready=False))
+
+        project_details = None
+        fig_project_monthly = None
+        monthly_breakdown_df = pd.DataFrame() # Initialize empty
+        if selected_project_name != 'Select a Project':
+            project_details = filtered_df[filtered_df['PROJECT_NAME'] == selected_project_name].iloc[0]
+            st.write(f"### Details for: {project_details['PROJECT_NAME']}")
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Business Allocation", f"${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}")
+            d2.metric("Current EAC", f"${project_details.get('CURRENT_EAC', 0):,.2f}")
+            d3.metric("All Prior Years Actuals", f"${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}")
+            
+            st.write(f"#### {current_year_str} Monthly Breakdown:")
+            monthly_breakdown_data = {'Month': [f"{current_year_str}_{i:02d}" for i in range(1, 13)]}
+            monthly_types = {'_A': 'Actuals', '_F': 'Forecasts', '_CP': 'Capital Plan'}
+            for suffix, name in monthly_types.items():
+                monthly_values = [project_details.get(f'{current_year_str}_{i:02d}{suffix}', 0) for i in range(1, 13)]
+                monthly_breakdown_data[name] = monthly_values
+            
+            monthly_breakdown_df = pd.DataFrame(monthly_breakdown_data)
+            st.dataframe(monthly_breakdown_df.style.format({'Actuals': "${:,.2f}", 'Forecasts': "${:,.2f}", 'Capital Plan': "${:,.2f}"}), use_container_width=True, hide_index=True)
+
+            monthly_project_melted = monthly_breakdown_df.melt(id_vars=['Month'], var_name='Type', value_name='Amount')
+            fig_project_monthly = px.bar(monthly_project_melted, x='Month', y='Amount', color='Type', barmode='group', title=f'Monthly Financials for {selected_project_name}')
+            st.plotly_chart(fig_project_monthly, use_container_width=True)
+        else:
+            st.info("Select a project from the dropdown to see its detailed monthly financials.")
         st.markdown("---")
 
         st.subheader("🏆 Project Performance")
@@ -299,11 +376,9 @@ if uploaded_file is not None:
             st.info("**How is project performance ranked?** By the **'Average Monthly Spread Score'**: the average monthly difference between actual vs. forecasted spend. A **lower score is better**.")
             st.write("#### Top 5 Best Behaving Projects (Lowest Avg. Monthly Spread)"); st.dataframe(project_performance_ranked.head(5)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}), use_container_width=True, hide_index=True)
             st.write("#### Bottom 5 Worst Behaving Projects (Highest Avg. Monthly Spread)"); st.dataframe(project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}), use_container_width=True, hide_index=True)
-            # NEW: Comment box for the bottom 5
             st.text_area("Add comments for the Bottom 5 Projects:", key="comment_bottom5", on_change=lambda: st.session_state.update(reports_ready=False))
         st.markdown("---")
 
-        # --- UPDATED: Reporting Section ---
         st.subheader("Generate Professional Reports")
         st.markdown("Add your comments in the sections above, then click the button below to prepare your downloadable reports.")
 
@@ -312,9 +387,9 @@ if uploaded_file is not None:
 
         if st.session_state.get('reports_ready', False):
             # Prepare data for reports
-            metrics_data = { "Number of Projects": total_projects, "Sum Actual Spend (YTD)": sum_actual_spend_ytd, "Sum Of Forecasted Numbers": sum_of_forecasted_numbers_sum, "Avg Run Rate / Month": run_rate_per_month, "Total Potential Underspend": capital_underspend, "Total Potential Overspend": capital_overspend, "Net Reallocation": net_reallocation_amount }
-            figures_data = { 'monthly_trends': None, 'total_spend': fig_total_spend_variance, 'avg_spend': fig_avg_spend_variance } # Placeholder for monthly trends figure
-            tables_data_raw = { 'Project_Details': filtered_df[project_table_cols_present], 'Over-Spend_Projects': overspend_projects, 'Under-Spend_Projects': underspend_projects, 'Performance_Rankings': project_performance_ranked }
+            metrics_data = { "Number of Projects": total_projects, "Sum Actual Spend (YTD)": f"${sum_actual_spend_ytd:,.2f}", "Sum Of Forecasted Numbers": f"${sum_of_forecasted_numbers_sum:,.2f}", "Avg Run Rate / Month": f"${run_rate_per_month:,.2f}", "Total Potential Underspend": f"${capital_underspend:,.2f}", "Total Potential Overspend": f"${capital_overspend:,.2f}", "Net Reallocation": f"${net_reallocation_amount:,.2f}" }
+            figures_data = { 'monthly_trends': fig_monthly_trends, 'total_spend': fig_total_spend_variance, 'avg_spend': fig_avg_spend_variance }
+            
             tables_data_styled = {
                 'project_details': filtered_df[project_table_cols_present].style.format(financial_format_map).to_html(index=False),
                 'overspend': overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format(currency_formatter).to_html(index=False),
@@ -322,19 +397,32 @@ if uploaded_file is not None:
                 'top_5': project_performance_ranked.head(5)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False),
                 'bottom_5': project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False)
             }
+
+            excel_tables = {
+                'Project_Details': filtered_df[project_table_cols_present],
+                'Over-Spend_Projects': overspend_projects,
+                'Under-Spend_Projects': underspend_projects,
+                'Performance_Rankings': project_performance_ranked
+            }
+            
             comments_data = { 'variance': st.session_state.comment_variance, 'impact': st.session_state.comment_impact, 'bottom5': st.session_state.comment_bottom5 }
             
-            # Generate report content
-            html_report = generate_html_report(metrics_data, figures_data, tables_data_styled, comments_data)
-            excel_report = generate_excel_report(metrics_data, tables_data_raw, comments_data)
+            project_details_report_html = None
+            if project_details is not None and fig_project_monthly is not None:
+                project_metrics_html = f"""<div class="metric-container"><div class="metric-box"><div class="metric-label">Business Allocation</div><div class="metric-value">${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}</div></div><div class="metric-box"><div class="metric-label">Current EAC</div><div class="metric-value">${project_details.get('CURRENT_EAC', 0):,.2f}</div></div><div class="metric-box"><div class="metric-label">All Prior Years Actuals</div><div class="metric-value">${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}</div></div></div>"""
+                project_table_html = monthly_breakdown_df.style.format({'Actuals': "${:,.2f}", 'Forecasts': "${:,.2f}", 'Capital Plan': "${:,.2f}"}).to_html(index=False)
+                project_chart_html = fig_project_monthly.to_html(full_html=False, include_plotlyjs='cdn')
+                project_details_report_html = f"""<h2 class="section-title">Detailed Financials for {selected_project_name}</h2>{project_metrics_html}<h3>{current_year_str} Monthly Breakdown</h3>{project_table_html}<div class="chart-container">{project_chart_html}</div>"""
+                excel_tables[f'Detail_{selected_project_name}'] = monthly_breakdown_df
 
-            # Display download buttons
+            # Generate report content
+            html_report = generate_html_report(metrics_data, figures_data, tables_data_styled, comments_data, project_details_report_html)
+            excel_report = generate_excel_report({k: v.replace('$', '').replace(',', '') for k, v in metrics_data.items()}, excel_tables, comments_data)
+
             st.info("Your reports are ready to download below.")
             dl1, dl2 = st.columns(2)
-            with dl1:
-                st.download_button("⬇️ Download Report as HTML", html_report, "capital_project_report.html", "text/html")
-            with dl2:
-                st.download_button("⬇️ Download Report as Excel", excel_report, "capital_project_report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            dl1.download_button("⬇️ Download Report as HTML", html_report, "capital_project_report.html", "text/html")
+            dl2.download_button("⬇️ Download Report as Excel", excel_report, "capital_project_report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 else:
     st.info("Upload your Capital Project CSV or Excel file to get started!")

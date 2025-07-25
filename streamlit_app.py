@@ -211,25 +211,38 @@ if uploaded_file is not None:
         overspend_projects = filtered_df[filtered_df['CAPITAL_OVERSPEND'] > 0].sort_values('CAPITAL_OVERSPEND', ascending=False)
         underspend_projects = filtered_df[filtered_df['CAPITAL_UNDERSPEND'] > 0].sort_values('CAPITAL_UNDERSPEND', ascending=False)
         
+        # --- BUG FIX STARTS HERE ---
+        # Define a formatter dictionary for the currency columns only
+        currency_formatter = {
+            'BUSINESS_ALLOCATION': "${:,.2f}",
+            f'TOTAL_{current_year}_FORECASTS': "${:,.2f}",
+            'CAPITAL_OVERSPEND': "${:,.2f}",
+            'CAPITAL_UNDERSPEND': "${:,.2f}"
+        }
+
         i1, i2 = st.columns(2)
         with i1:
             st.write("#### Projects with Largest Forecasted Overspend")
             st.markdown("These projects are forecasted to exceed their `BUSINESS_ALLOCATION`.")
             if not overspend_projects.empty:
-                st.dataframe(overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format("${:,.2f}"), use_container_width=True, hide_index=True)
-            else: st.info("No projects are currently forecasting an overspend.")
+                # Apply the specific formatter, not a generic one
+                st.dataframe(overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format(currency_formatter), use_container_width=True, hide_index=True)
+            else: 
+                st.info("No projects are currently forecasting an overspend.")
         with i2:
             st.write("#### Projects with Largest Potential Underspend")
             st.markdown("These projects have capital that could be reallocated.")
             if not underspend_projects.empty:
-                st.dataframe(underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format("${:,.2f}"), use_container_width=True, hide_index=True)
-            else: st.info("No projects are currently forecasting an underspend.")
+                # Apply the specific formatter here as well
+                st.dataframe(underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format(currency_formatter), use_container_width=True, hide_index=True)
+            else: 
+                st.info("No projects are currently forecasting an underspend.")
+        # --- BUG FIX ENDS HERE ---
         
         if not overspend_projects.empty and not underspend_projects.empty:
              st.success(f"**Reallocation Suggestion:** There is a total potential underspend of **${capital_underspend:,.2f}** which could cover the total potential overspend of **${capital_overspend:,.2f}**.")
         st.markdown("---")
         
-        # --- RE-ADDED: Detailed Project Financials (on selection) ---
         st.subheader("Individual Project Financials")
         project_names = ['Select a Project'] + filtered_df['PROJECT_NAME'].dropna().unique().tolist()
         selected_project_name = st.selectbox("Select a project for a detailed monthly view:", project_names)
@@ -258,7 +271,6 @@ if uploaded_file is not None:
             st.plotly_chart(fig_project_monthly, use_container_width=True)
         else:
             st.info("Select a project from the dropdown to see its detailed monthly financials.")
-            # Define placeholders for the report if no project is selected
             project_details = None
             fig_project_monthly = None
         st.markdown("---")
@@ -322,10 +334,12 @@ if uploaded_file is not None:
                 "Net Reallocation": f"${net_reallocation_amount:,.2f}"
             }
             figures_data = {'total_spend': fig_total_spend_variance, 'avg_spend': fig_avg_spend_variance}
+            
+            # Use the corrected currency formatter for the report tables as well
             tables_data = {
                 'project_details': filtered_df[project_table_cols_present].style.format(financial_format_map).to_html(index=False),
-                'overspend': overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format("${:,.2f}").to_html(index=False),
-                'underspend': underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format("${:,.2f}").to_html(index=False),
+                'overspend': overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format(currency_formatter).to_html(index=False),
+                'underspend': underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format(currency_formatter).to_html(index=False),
                 'top_5': project_performance_ranked.head(5)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False),
                 'bottom_5': project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False)
             }
@@ -356,6 +370,5 @@ else:
 
 st.markdown("---")
 with st.expander("View Application Source Code"):
-    # This will now correctly display the source code of the entire script file.
     source_code = inspect.getsource(inspect.currentframe())
     st.code(source_code, language='python')

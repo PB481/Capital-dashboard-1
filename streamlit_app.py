@@ -1,413 +1,962 @@
+# “””
+Fund Administration — Client Pricing Model
+
+Interactive Streamlit application for modelling fund administration fees,
+negotiation scenarios, and portfolio-level economics.
+
+Requirements:
+pip install streamlit plotly pandas numpy
+
+Run:
+streamlit run fund_admin_pricing_app.py
+“””
+
 import streamlit as st
-import pandas as pd
-import plotly.express as px
-import io
 import plotly.graph_objects as go
-import inspect
-from datetime import datetime
-import re
+import plotly.express as px
+from plotly.subplots import make_subplots
+import pandas as pd
+import numpy as np
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional
+import json
 
-# --- Page and Session State Setup ---
-st.set_page_config(layout="wide", page_title="Capital Project Portfolio Dashboard")
+# ──────────────────────────────────────────────────────────────────────
 
-# Initialize session state for comments and report button visibility
-if 'comment_variance' not in st.session_state:
-    st.session_state.comment_variance = ""
-if 'comment_impact' not in st.session_state:
-    st.session_state.comment_impact = ""
-if 'comment_bottom5' not in st.session_state:
-    st.session_state.comment_bottom5 = ""
-if 'reports_ready' not in st.session_state:
-    st.session_state.reports_ready = False
+# PAGE CONFIG & THEME
 
-# Define current_year and current_month globally
-current_year = datetime.now().year
-current_month = datetime.now().month
-current_year_str = str(current_year)
+# ──────────────────────────────────────────────────────────────────────
 
+st.set_page_config(
+page_title=“FA Pricing Model”,
+page_icon=“📊”,
+layout=“wide”,
+initial_sidebar_state=“expanded”,
+)
 
-# --- Data Loading and Cleaning ---
-@st.cache_data
-def load_data(uploaded_file: io.BytesIO) -> pd.DataFrame:
-    """
-    Loads and preprocesses data from a CSV or Excel file.
-    """
-    try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-    except Exception as e:
-        st.error(f"Error loading file: {e}")
-        return pd.DataFrame()
+# Dark financial theme colours
 
-    def clean_col_name(col_name: str) -> str:
-        """Cleans a single column name."""
-        col_name = str(col_name).strip().replace(' ', '_').replace('+', '_').replace('.', '_').replace('-', '_')
-        col_name = '_'.join(filter(None, col_name.split('_')))
-        col_name = col_name.upper()
-        corrections = {
-            'PROJEC_TID': 'PROJECT_ID', 'INI_MATIVE_PROGRAM': 'INITIATIVE_PROGRAM',
-            'ALL_PRIOR_YEARS_A': 'ALL_PRIOR_YEARS_ACTUALS', 'C_URRENT_EAC': 'CURRENT_EAC',
-            'QE_RUN_RATE': 'QE_RUN_RATE', 'RATE_1': 'RATE_SUPPLEMENTARY'
-        }
-        return corrections.get(col_name, col_name)
+THEME = {
+“bg”: “#0a0e17”,
+“card”: “#111827”,
+“border”: “#1e293b”,
+“text”: “#e2e8f0”,
+“muted”: “#94a3b8”,
+“dim”: “#64748b”,
+“accent”: “#3b82f6”,
+“green”: “#10b981”,
+“red”: “#ef4444”,
+“amber”: “#f59e0b”,
+“purple”: “#8b5cf6”,
+“cyan”: “#06b6d4”,
+“chart_palette”: [
+“#3b82f6”, “#8b5cf6”, “#06b6d4”, “#10b981”,
+“#f59e0b”, “#ef4444”, “#ec4899”,
+],
+}
 
-    df.columns = [clean_col_name(col) for col in df.columns]
+# Inject custom CSS for dark styling
 
-    cols = []
-    seen = {}
-    for col in df.columns:
-        original_col = col
-        count = seen.get(col, 0)
-        if count > 0:
-            col = f"{col}_{count}"
-        cols.append(col)
-        seen[original_col] = count + 1
-    df.columns = cols
+st.markdown(”””
 
-    financial_pattern = r'^(20\d{2}_\d{2}_(A|F|CP)(_\d+)?|ALL_PRIOR_YEARS_ACTUALS|BUSINESS_ALLOCATION|CURRENT_EAC|QE_FORECAST_VS_QE_PLAN|FORECAST_VS_BA|YE_RUN|RATE|QE_RUN|RATE_SUPPLEMENTARY)$'
-    financial_cols_to_convert = [col for col in df.columns if pd.Series([col]).str.contains(financial_pattern, regex=True).any()]
+<style>
+    /* Main background */
+    .stApp {
+        background-color: #0a0e17;
+        color: #e2e8f0;
+    }
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #111827;
+        border-right: 1px solid #1e293b;
+    }
+    section[data-testid="stSidebar"] .stMarkdown p,
+    section[data-testid="stSidebar"] .stMarkdown li,
+    section[data-testid="stSidebar"] label {
+        color: #94a3b8 !important;
+    }
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: #111827;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 16px 20px;
+    }
+    [data-testid="stMetricLabel"] p {
+        color: #64748b !important;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        font-size: 0.72rem !important;
+        font-weight: 600;
+    }
+    [data-testid="stMetricValue"] {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700;
+    }
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        background: #111827;
+        border-radius: 10px;
+        padding: 4px;
+        border: 1px solid #1e293b;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        color: #94a3b8;
+        font-weight: 600;
+    }
+    .stTabs [aria-selected="true"] {
+        background: #3b82f6 !important;
+        color: white !important;
+    }
+    /* Tables */
+    .stDataFrame {
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+    }
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: #111827;
+        border: 1px solid #1e293b;
+        border-radius: 8px;
+    }
+    /* Selectbox / inputs */
+    .stSelectbox > div > div,
+    .stMultiSelect > div > div,
+    .stNumberInput > div > div > input {
+        background: #111827 !important;
+        border-color: #1e293b !important;
+        color: #e2e8f0 !important;
+    }
+    /* Narrative info boxes */
+    .narrative-box {
+        background: linear-gradient(135deg, #111827 0%, #0f1629 100%);
+        border: 1px solid #1e293b;
+        border-left: 3px solid #3b82f6;
+        border-radius: 8px;
+        padding: 16px 20px;
+        margin: 12px 0;
+        font-size: 0.88rem;
+        line-height: 1.7;
+        color: #94a3b8;
+    }
+    .narrative-box strong {
+        color: #e2e8f0;
+    }
+    /* Section headers */
+    .section-header {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        margin: 24px 0 12px;
+        letter-spacing: 0.3px;
+    }
+    /* Scenario cards */
+    .scenario-card {
+        background: #111827;
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 18px;
+        text-align: center;
+    }
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
 
-    for col in financial_cols_to_convert:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.replace(',', '').str.strip().replace('', '0')
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+""", unsafe_allow_html=True)
 
-    monthly_col_pattern = re.compile(rf'^{current_year}_\d{{2}}_([AF]|CP)$')
-    monthly_actuals_cols, monthly_forecasts_cols, monthly_plan_cols = [], [], []
-    for col in df.columns:
-        match = monthly_col_pattern.match(col)
-        if match:
-            col_type = match.group(1)
-            if col_type == 'A': monthly_actuals_cols.append(col)
-            elif col_type == 'F': monthly_forecasts_cols.append(col)
-            elif col_type == 'CP': monthly_plan_cols.append(col)
+# ──────────────────────────────────────────────────────────────────────
 
-    for col_list in [monthly_actuals_cols, monthly_forecasts_cols, monthly_plan_cols]:
-        for col in col_list:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+# DATA MODELS
 
-    df[f'TOTAL_{current_year}_ACTUALS'] = df[monthly_actuals_cols].sum(axis=1) if monthly_actuals_cols else 0
-    df[f'TOTAL_{current_year}_FORECASTS'] = df[monthly_forecasts_cols].sum(axis=1) if monthly_forecasts_cols else 0
-    df[f'TOTAL_{current_year}_CAPITAL_PLAN'] = df[monthly_plan_cols].sum(axis=1) if monthly_plan_cols else 0
+# ──────────────────────────────────────────────────────────────────────
 
-    if 'ALL_PRIOR_YEARS_ACTUALS' in df.columns:
-        df['TOTAL_ACTUALS_TO_DATE'] = df['ALL_PRIOR_YEARS_ACTUALS'] + df[f'TOTAL_{current_year}_ACTUALS']
-    else:
-        df['TOTAL_ACTUALS_TO_DATE'] = df[f'TOTAL_{current_year}_ACTUALS']
-        st.warning("Column 'ALL_PRIOR_YEARS_ACTUALS' not found.")
+FUND_TYPES = {
+“UCITS Equity”:        {“complexity”: 1.00, “base_aum”: 500},
+“UCITS Fixed Income”:  {“complexity”: 1.15, “base_aum”: 750},
+“UCITS Money Market”:  {“complexity”: 0.85, “base_aum”: 1000},
+“UCITS Multi-Asset”:   {“complexity”: 1.30, “base_aum”: 400},
+“UCITS ETF”:           {“complexity”: 1.25, “base_aum”: 600},
+“AIF Private Equity”:  {“complexity”: 1.60, “base_aum”: 200},
+“AIF Real Estate”:     {“complexity”: 1.50, “base_aum”: 300},
+“AIF Hedge Fund”:      {“complexity”: 1.75, “base_aum”: 250},
+“AIF Infrastructure”:  {“complexity”: 1.55, “base_aum”: 350},
+}
 
-    ytd_actual_cols = [col for col in monthly_actuals_cols if int(col.split('_')[1]) <= current_month]
-    df['SUM_ACTUAL_SPEND_YTD'] = df[ytd_actual_cols].sum(axis=1) if ytd_actual_cols else 0
-    df['SUM_OF_FORECASTED_NUMBERS'] = df[f'TOTAL_{current_year}_FORECASTS']
-    df['RUN_RATE_PER_MONTH'] = (df[f'TOTAL_{current_year}_ACTUALS'] + df[f'TOTAL_{current_year}_FORECASTS']) / 12
+SERVICE_MODULES = {
+“NAV Calculation”:       {“bps”: 1.5, “required”: True,  “desc”: “Daily/weekly NAV production, pricing, P&L”},
+“Transfer Agency”:       {“bps”: 1.0, “required”: False, “desc”: “Investor servicing, subscriptions, redemptions”},
+“Regulatory Compliance”: {“bps”: 0.8, “required”: True,  “desc”: “UCITS/AIFMD limits, CBI reporting, EMIR”},
+“Client Reporting”:      {“bps”: 0.6, “required”: False, “desc”: “Factsheets, investor comms, board packs”},
+“Tax Services”:          {“bps”: 0.5, “required”: False, “desc”: “WHT reclaims, tax reporting, FATCA/CRS”},
+“Depositary Lite”:       {“bps”: 0.4, “required”: False, “desc”: “Cashflow monitoring, asset verification”},
+“Risk Analytics”:        {“bps”: 0.7, “required”: False, “desc”: “VaR, stress testing, liquidity monitoring”},
+“ESG / SFDR Reporting”:  {“bps”: 0.55,“required”: False, “desc”: “SFDR Art 8/9, PAI indicators, taxonomy”},
+}
 
-    if 'BUSINESS_ALLOCATION' in df.columns:
-        df['CAPITAL_VARIANCE'] = df['BUSINESS_ALLOCATION'] - df[f'TOTAL_{current_year}_FORECASTS']
-        df['CAPITAL_UNDERSPEND'] = df['CAPITAL_VARIANCE'].apply(lambda x: x if x > 0 else 0)
-        df['CAPITAL_OVERSPEND'] = df['CAPITAL_VARIANCE'].apply(lambda x: abs(x) if x < 0 else 0)
-    else:
-        df['CAPITAL_VARIANCE'], df['CAPITAL_UNDERSPEND'], df['CAPITAL_OVERSPEND'] = 0, 0, 0
-        st.warning("Column 'BUSINESS_ALLOCATION' not found.")
+VOLUME_TIERS = [
+(0,     500,    0.00),
+(500,   2000,   0.08),
+(2000,  5000,   0.15),
+(5000,  15000,  0.22),
+(15000, 1e9,    0.30),
+]
 
-    df['NET_REALLOCATION_AMOUNT'] = df['CAPITAL_UNDERSPEND'] - df['CAPITAL_OVERSPEND']
-    
-    num_actual_months = len(ytd_actual_cols) if ytd_actual_cols else 1
-    num_forecast_months = len(monthly_forecasts_cols) if monthly_forecasts_cols else 1
-    df['AVG_ACTUAL_SPEND'] = df['SUM_ACTUAL_SPEND_YTD'] / num_actual_months
-    df['AVG_FORECAST_SPEND'] = df[f'TOTAL_{current_year}_FORECASTS'] / num_forecast_months
-    df['TOTAL_SPEND_VARIANCE'] = df[f'TOTAL_{current_year}_ACTUALS'] - df[f'TOTAL_{current_year}_FORECASTS']
+NEGOTIATION_SCENARIOS = {
+“Standard”:         {“discount”: 0.00, “color”: THEME[“accent”], “desc”: “Rack rate — full pricing with volume discounts only”},
+“Competitive Bid”:  {“discount”: 0.12, “color”: THEME[“amber”],  “desc”: “2–3 administrators shortlisted; typical 12% reduction”},
+“Strategic Win”:    {“discount”: 0.20, “color”: THEME[“purple”], “desc”: “Anchor mandate / marquee client; 20% reduction”},
+“Retention”:        {“discount”: 0.25, “color”: THEME[“red”],    “desc”: “At-risk relationship; defensive posture — use sparingly”},
+}
 
-    monthly_af_variance_cols = []
-    for i in range(1, 13):
-        actual_col, forecast_col = f'{current_year}_{i:02d}_A', f'{current_year}_{i:02d}_F'
-        if actual_col in df.columns and forecast_col in df.columns:
-            variance_col_name = f'{current_year}_{i:02d}_AF_VARIANCE'
-            df[variance_col_name] = df[actual_col] - df[forecast_col]
-            monthly_af_variance_cols.append(variance_col_name)
+NAV_FREQ_MULTIPLIER = {“Daily”: 1.0, “Weekly”: 0.85, “Monthly”: 0.70}
 
-    df['AVERAGE_MONTHLY_SPREAD_SCORE'] = df[monthly_af_variance_cols].abs().mean(axis=1) if monthly_af_variance_cols else 0
-    return df
+# ──────────────────────────────────────────────────────────────────────
 
-# --- Report Generation Functions ---
-def generate_html_report(metrics, figures, tables, comments, project_details_html=None):
-    """Generates a comprehensive HTML report of the dashboard state."""
-    monthly_trends_html = figures['monthly_trends'].to_html(full_html=False, include_plotlyjs='cdn') if figures.get('monthly_trends') else '<p>No monthly trend data available.</p>'
-    
-    def create_comment_block(title, comment_text):
-        if comment_text and comment_text.strip():
-            comment_text_html = comment_text.replace('\n', '<br>')
-            return f"<h3>{title}</h3><p style='white-space: pre-wrap; background-color:#f0f2f6; padding: 10px; border-radius: 5px;'>{comment_text_html}</p>"
-        return ""
+# PRICING ENGINE
 
-    report_html = f"""
-    <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Capital Project Report</title><style>
-    body{{font-family:sans-serif;margin:20px;color:#333}}h1,h2,h3{{color:#004d40}}.metric-container{{display:flex;justify-content:space-around;flex-wrap:wrap;margin-bottom:20px}}
-    .metric-box{{border:1px solid #ddd;border-radius:8px;padding:15px;margin:10px;flex:1;min-width:200px;text-align:center;background-color:#f9f9f9}}
-    .metric-label{{font-size:0.9em;color:#555}}.metric-value{{font-size:1.5em;font-weight:bold;color:#222;margin-top:5px}}
-    table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{border:1px solid #ddd;padding:8px;text-align:left}}th{{background-color:#e6f2f0}}
-    .chart-container{{margin-top:30px;page-break-inside:avoid;}}.section-title{{margin-top:40px;border-bottom:2px solid #004d40;padding-bottom:10px;page-break-after:avoid;}}
-    footer{{text-align:center;margin-top:50px;padding-top:20px;border-top:1px solid #eee;font-size:0.8em;color:#777}}
-    .flex-container{{display:flex;justify-content:space-between;gap:20px;page-break-inside:avoid;}}.flex-child{{flex:1;min-width:45%;}}
-    </style></head><body>
-    <h1>Capital Project Portfolio Report</h1><p>Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    <h2 class="section-title">Key Metrics Overview</h2><div class="metric-container">
-    {''.join([f'<div class="metric-box"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>' for label, value in metrics.items()])}
+# ──────────────────────────────────────────────────────────────────────
+
+def get_volume_discount(aum_mn: float) -> float:
+for lo, hi, disc in VOLUME_TIERS:
+if lo <= aum_mn < hi:
+return disc
+return VOLUME_TIERS[-1][2]
+
+def calculate_pricing(
+fund_type: str,
+aum_mn: float,
+selected_services: List[str],
+scenario: str = “Standard”,
+custom_discount_pct: float = 0.0,
+share_classes: int = 3,
+nav_frequency: str = “Daily”,
+term_years: int = 3,
+) -> dict:
+“”“Core pricing engine — mirrors the React model exactly.”””
+complexity = FUND_TYPES[fund_type][“complexity”]
+
+```
+# Aggregate base bps from selected services
+total_bps = 0.0
+svc_breakdown = []
+for svc_name in selected_services:
+    svc = SERVICE_MODULES[svc_name]
+    adj_bps = svc["bps"] * complexity
+    total_bps += adj_bps
+    svc_breakdown.append({"service": svc_name, "base_bps": svc["bps"], "adjusted_bps": adj_bps})
+
+# NAV frequency multiplier
+freq_mult = NAV_FREQ_MULTIPLIER.get(nav_frequency, 1.0)
+total_bps *= freq_mult
+
+# Share class surcharge (first 3 included)
+extra_classes = max(0, share_classes - 3)
+sc_surcharge = extra_classes * 0.08 * complexity
+total_bps += sc_surcharge
+
+# Discounts
+vol_disc = get_volume_discount(aum_mn)
+nego_disc = NEGOTIATION_SCENARIOS[scenario]["discount"]
+custom_disc = custom_discount_pct / 100.0
+combined_disc = 1 - (1 - vol_disc) * (1 - nego_disc) * (1 - custom_disc)
+
+# Term commitment discount
+term_disc = 0.05 if term_years >= 5 else 0.03 if term_years >= 3 else 0.0
+final_disc = 1 - (1 - combined_disc) * (1 - term_disc)
+
+effective_bps = total_bps * (1 - final_disc)
+
+# Revenue (with minimum floor)
+min_fee_mn = 0.05  # $50K
+raw_revenue = (aum_mn * effective_bps) / 10_000
+annual_revenue = max(raw_revenue, min_fee_mn)
+min_fee_applied = raw_revenue < min_fee_mn
+
+# Cost estimation
+headcount = max(1, int(np.ceil(aum_mn / 800))) + (1 if complexity > 1.3 else 0) + len(selected_services) // 3
+cost_per_head = 0.085  # $85K
+annual_cost = headcount * cost_per_head
+
+margin = (annual_revenue - annual_cost) / annual_revenue if annual_revenue > 0 else 0
+contract_value = annual_revenue * term_years
+
+return {
+    "gross_bps": total_bps,
+    "effective_bps": effective_bps,
+    "annual_revenue_mn": annual_revenue,
+    "annual_cost_mn": annual_cost,
+    "margin": margin,
+    "contract_value_mn": contract_value,
+    "headcount": headcount,
+    "service_breakdown": svc_breakdown,
+    "volume_discount": vol_disc,
+    "nego_discount": nego_disc,
+    "term_discount": term_disc,
+    "final_discount": final_disc,
+    "share_class_surcharge": sc_surcharge,
+    "min_fee_applied": min_fee_applied,
+    "term_years": term_years,
+}
+```
+
+# ──────────────────────────────────────────────────────────────────────
+
+# FORMATTING HELPERS
+
+# ──────────────────────────────────────────────────────────────────────
+
+def fmt_usd(mn: float) -> str:
+val = mn * 1e6
+if abs(val) >= 1e9:
+return f”${val/1e9:,.2f}B”
+if abs(val) >= 1e6:
+return f”${val/1e6:,.2f}M”
+if abs(val) >= 1e3:
+return f”${val/1e3:,.1f}K”
+return f”${val:,.0f}”
+
+def fmt_bps(bps: float) -> str:
+return f”{bps:.2f} bps”
+
+def fmt_pct(pct: float) -> str:
+return f”{pct*100:.1f}%”
+
+def narrative(text: str):
+st.markdown(f’<div class="narrative-box">{text}</div>’, unsafe_allow_html=True)
+
+def section_header(icon: str, title: str):
+st.markdown(f’<div class="section-header">{icon} {title}</div>’, unsafe_allow_html=True)
+
+def plotly_dark_layout(fig, height=350):
+fig.update_layout(
+template=“plotly_dark”,
+paper_bgcolor=THEME[“card”],
+plot_bgcolor=THEME[“card”],
+font=dict(family=“IBM Plex Sans, sans-serif”, color=THEME[“muted”], size=12),
+margin=dict(l=40, r=20, t=40, b=40),
+height=height,
+legend=dict(font=dict(size=11)),
+)
+fig.update_xaxes(gridcolor=THEME[“border”], zerolinecolor=THEME[“border”])
+fig.update_yaxes(gridcolor=THEME[“border”], zerolinecolor=THEME[“border”])
+return fig
+
+# ──────────────────────────────────────────────────────────────────────
+
+# HEADER
+
+# ──────────────────────────────────────────────────────────────────────
+
+st.markdown(”””
+
+<div style="border-bottom: 1px solid #1e293b; padding-bottom: 16px; margin-bottom: 20px;">
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+        <div style="width:8px; height:8px; border-radius:50%; background:#10b981; box-shadow:0 0 8px #10b981;"></div>
+        <span style="font-size:0.7rem; color:#64748b; text-transform:uppercase; letter-spacing:2px; font-weight:600;">Fund Administration</span>
     </div>
-    <h2 class="section-title">Filtered Project Details</h2>{tables['project_details']}
-    <h2 class="section-title">{current_year} Monthly Spend Trends</h2><div class="chart-container">{monthly_trends_html}</div>
-    <h2 class="section-title">Project Spend Variance Analysis</h2>{create_comment_block('Analyst Comments', comments['variance'])}<div class="flex-container">
-    <div class="flex-child"><h3>Total Spend</h3>{figures['total_spend'].to_html(full_html=False, include_plotlyjs='cdn') if figures['total_spend'] else '<p>N/A</p>'}</div>
-    <div class="flex-child"><h3>Average Spend</h3>{figures['avg_spend'].to_html(full_html=False, include_plotlyjs='cdn') if figures['avg_spend'] else '<p>N/A</p>'}</div>
-    </div>
-    <h2 class="section-title">Budget Impact & Reallocation</h2>{create_comment_block('Analyst Comments', comments['impact'])}<div class="flex-container">
-    <div class="flex-child"><h3>Largest Forecasted Overspend</h3>{tables['overspend']}</div>
-    <div class="flex-child"><h3>Largest Potential Underspend</h3>{tables['underspend']}</div>
-    </div>
-    {project_details_html if project_details_html else ''}
-    <h2 class="section-title">Project Performance</h2>{create_comment_block('Analyst Comments on Bottom 5 Projects', comments['bottom5'])}<div class="flex-container">
-    <div class="flex-child"><h3>Top 5 Best Behaving</h3>{tables['top_5']}</div>
-    <div class="flex-child"><h3>Bottom 5 Worst Behaving</h3>{tables['bottom_5']}</div>
-    </div>
-    <footer><p>Generated by Capital Project Portfolio Dashboard</p></footer>
-    </body></html>"""
-    return report_html
+    <h1 style="margin:0 0 4px; font-size:1.7rem; font-weight:700; letter-spacing:-0.5px;">Client Pricing Model</h1>
+    <p style="margin:0; font-size:0.85rem; color:#94a3b8;">
+        Fee structuring engine for Irish-domiciled UCITS & AIF fund administration mandates
+    </p>
+</div>
+""", unsafe_allow_html=True)
 
-def generate_excel_report(metrics, tables, comments):
-    """Generates a multi-sheet Excel report."""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        summary_df = pd.DataFrame([metrics])
-        comments_df = pd.DataFrame.from_dict(comments, orient='index', columns=['Comments'])
-        summary_df.to_excel(writer, sheet_name='Summary', index=False)
-        comments_df.to_excel(writer, sheet_name='Summary', startrow=len(summary_df) + 2)
+# ──────────────────────────────────────────────────────────────────────
 
-        for name, df in tables.items():
-            if not df.empty:
-                sheet_name = re.sub(r'[\\/*?:"<>|]', "", name)[:31]
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+# SIDEBAR — FUND CONFIGURATOR
 
-    return output.getvalue()
+# ──────────────────────────────────────────────────────────────────────
 
-# --- Streamlit App Layout ---
-st.title("💰 Capital Project Portfolio Dashboard")
-st.markdown("This dashboard provides an interactive overview of your capital projects, allowing you to track financials, monitor trends, and identify variances.")
+with st.sidebar:
+st.markdown(”### 📋 Fund Configuration”)
 
-uploaded_file = st.file_uploader("Upload your Capital Project CSV or Excel file", type=["csv", "xlsx"])
+```
+fund_type = st.selectbox(
+    "Fund Type",
+    options=list(FUND_TYPES.keys()),
+    format_func=lambda x: f"{x}  (×{FUND_TYPES[x]['complexity']:.2f})",
+    help="Complexity multiplier adjusts base rates for operational intensity.",
+)
 
-if uploaded_file is not None:
-    st.session_state.reports_ready = False
-    df = load_data(uploaded_file)
-    if not df.empty:
-        st.sidebar.header("Filter Projects")
-        filter_columns = { "PORTFOLIO_OBS_LEVEL1": "Select Portfolio Level", "SUB_PORTFOLIO_OBS_LEVEL2": "Select Sub-Portfolio Level", "PROJECT_MANAGER": "Select Project Manager", "BRS_CLASSIFICATION": "Select BRS Classification", "FUND_DECISION": "Select Fund Decision" }
-        selected_filters = {}
-        for col_name, display_name in filter_columns.items():
-            if col_name in df.columns:
-                options = ['All'] + sorted(df[col_name].dropna().unique())
-                selected_filters[col_name] = st.sidebar.selectbox(display_name, options, on_change=lambda: st.session_state.update(reports_ready=False))
-            else:
-                if col_name == "FUND_DECISION": st.sidebar.info(f"Column '{col_name}' not found.")
-                selected_filters[col_name] = 'All'
-        
-        filtered_df = df.copy()
-        for col_name, selected_value in selected_filters.items():
-            if selected_value != 'All' and col_name in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df[col_name] == selected_value]
+aum_mn = st.slider(
+    "AUM ($M)",
+    min_value=50, max_value=25000, value=500, step=50,
+    help="Volume discounts apply at $500M, $2B, $5B, and $15B thresholds.",
+)
 
-        if filtered_df.empty:
-            st.warning("No projects match the selected filters."); st.stop()
+col1, col2 = st.columns(2)
+with col1:
+    nav_frequency = st.selectbox("NAV Frequency", ["Daily", "Weekly", "Monthly"])
+with col2:
+    share_classes = st.number_input("Share Classes", min_value=1, max_value=30, value=3)
 
-        total_projects = len(filtered_df)
-        sum_actual_spend_ytd = filtered_df['SUM_ACTUAL_SPEND_YTD'].sum()
-        sum_of_forecasted_numbers_sum = filtered_df['SUM_OF_FORECASTED_NUMBERS'].sum()
-        run_rate_per_month = filtered_df['RUN_RATE_PER_MONTH'].mean()
-        capital_underspend = filtered_df['CAPITAL_UNDERSPEND'].sum()
-        capital_overspend = filtered_df['CAPITAL_OVERSPEND'].sum()
-        net_reallocation_amount = filtered_df['NET_REALLOCATION_AMOUNT'].sum()
-
-        st.subheader("Key Metrics Overview")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Number of Projects", total_projects)
-        col2.metric("Sum Actual Spend (YTD)", f"${sum_actual_spend_ytd:,.2f}")
-        col3.metric("Sum Of Forecasted Numbers", f"${sum_of_forecasted_numbers_sum:,.2f}")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Average Run Rate / Month", f"${run_rate_per_month:,.2f}")
-        m2.metric("Total Potential Underspend", f"${capital_underspend:,.2f}")
-        m3.metric("Total Potential Overspend", f"${capital_overspend:,.2f}")
-        m4.metric("Net Reallocation Amount", f"${net_reallocation_amount:,.2f}")
-        st.markdown("---")
-
-        st.subheader("Project Details")
-        project_table_cols = [ 'PORTFOLIO_OBS_LEVEL1', 'SUB_PORTFOLIO_OBS_LEVEL2', 'PROJECT_NAME', 'PROJECT_MANAGER', 'BRS_CLASSIFICATION', 'FUND_DECISION', 'BUSINESS_ALLOCATION', 'CURRENT_EAC', 'ALL_PRIOR_YEARS_ACTUALS', f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS', f'TOTAL_{current_year}_CAPITAL_PLAN', 'CAPITAL_UNDERSPEND', 'CAPITAL_OVERSPEND', 'AVERAGE_MONTHLY_SPREAD_SCORE' ]
-        project_table_cols_present = [col for col in project_table_cols if col in filtered_df.columns]
-        financial_format_map = { col: "${:,.2f}" for col in project_table_cols_present if any(keyword in col for keyword in ['ACTUALS', 'FORECASTS', 'PLAN', 'ALLOCATION', 'EAC', 'SPEND', 'AMOUNT', 'SCORE'])}
-        st.dataframe(filtered_df[project_table_cols_present].style.format(financial_format_map), use_container_width=True, hide_index=True)
-        st.markdown("---")
-
-        st.subheader(f"{current_year} Monthly Spend Trends")
-        monthly_col_pattern_filtered = re.compile(rf'^{current_year_str}_\d{{2}}_([AF])$')
-        monthly_actuals_cols_filtered = [col for col in filtered_df.columns if monthly_col_pattern_filtered.match(col) and col.endswith('_A')]
-        monthly_forecasts_cols_filtered = [col for col in filtered_df.columns if monthly_col_pattern_filtered.match(col) and col.endswith('_F')]
-        
-        actuals_data = [{'Month': f'{current_year_str}_{int(col.split("_")[1]):02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Actuals'} for col in monthly_actuals_cols_filtered if int(col.split("_")[1]) <= current_month]
-        forecasts_data = [{'Month': f'{current_year_str}_{int(col.split("_")[1]):02d}', 'Amount': filtered_df[col].sum(), 'Type': 'Forecasts'} for col in monthly_forecasts_cols_filtered if int(col.split("_")[1]) > current_month]
-        
-        monthly_combined_df = pd.DataFrame(actuals_data + forecasts_data)
-        
-        fig_monthly_trends = None
-        if not monthly_combined_df.empty:
-            month_order = [f'{current_year_str}_{i:02d}' for i in range(1, 13)]
-            monthly_combined_df['Month_Sort'] = pd.Categorical(monthly_combined_df['Month'], categories=month_order, ordered=True)
-            monthly_combined_df = monthly_combined_df.sort_values('Month_Sort')
-            monthly_combined_df['Amount'] = monthly_combined_df['Amount'].replace(0, pd.NA)
-
-            fig_monthly_trends = px.line(monthly_combined_df.dropna(subset=['Amount']), x='Month_Sort', y='Amount', color='Type', title=f'Monthly Capital Trends for {current_year_str}', labels={'Month_Sort': 'Month', 'Amount': 'Amount ($)'}, markers=True)
-            
-            line_df = monthly_combined_df.groupby('Month_Sort')['Amount'].sum(min_count=1).reset_index()
-            fig_monthly_trends.add_trace(go.Scatter(x=line_df['Month_Sort'], y=line_df['Amount'], mode='lines', line=dict(color='black', dash='dot'), name='Trend', connectgaps=True))
-            st.plotly_chart(fig_monthly_trends, use_container_width=True)
-        else:
-            st.warning(f"No monthly actuals or forecasts data found for trend analysis.")
-        st.markdown("---")
-
-        st.subheader("🔎 Project Spend Variance Analysis")
-        st.markdown("These charts compare spend for each project, sorted to show the greatest difference between what was spent and what was forecasted.")
-        num_projects_to_show = st.slider("Select number of projects to display in variance charts:", 5, min(50, total_projects), min(15, total_projects), 5, on_change=lambda: st.session_state.update(reports_ready=False))
-        variance_df = filtered_df.reindex(filtered_df['TOTAL_SPEND_VARIANCE'].abs().sort_values(ascending=False).index).head(num_projects_to_show)
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write(f"**Total Spend: Actuals vs. Forecast**")
-            melted_total = variance_df.melt(id_vars='PROJECT_NAME', value_vars=[f'TOTAL_{current_year}_ACTUALS', f'TOTAL_{current_year}_FORECASTS'], var_name='Spend Type', value_name='Amount')
-            melted_total['Spend Type'] = melted_total['Spend Type'].replace({f'TOTAL_{current_year}_ACTUALS': 'Total Actuals', f'TOTAL_{current_year}_FORECASTS': 'Total Forecasts'})
-            fig_total_spend_variance = px.bar(melted_total, y='PROJECT_NAME', x='Amount', color='Spend Type', barmode='group', orientation='h', height=max(400, num_projects_to_show * 35))
-            fig_total_spend_variance.update_layout(yaxis={'categoryorder':'total ascending'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig_total_spend_variance, use_container_width=True)
-        with c2:
-            st.write(f"**Average Monthly Spend**")
-            melted_avg = variance_df.melt(id_vars='PROJECT_NAME', value_vars=['AVG_ACTUAL_SPEND', 'AVG_FORECAST_SPEND'], var_name='Spend Type', value_name='Amount')
-            melted_avg['Spend Type'] = melted_avg['Spend Type'].replace({'AVG_ACTUAL_SPEND': 'Avg Actuals (YTD)', 'AVG_FORECAST_SPEND': 'Avg Forecasts (Annual)'})
-            fig_avg_spend_variance = px.bar(melted_avg, y='PROJECT_NAME', x='Amount', color='Spend Type', barmode='group', orientation='h', height=max(400, num_projects_to_show * 35))
-            fig_avg_spend_variance.update_layout(yaxis={'categoryorder':'total ascending'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig_avg_spend_variance, use_container_width=True)
-        
-        st.text_area("Add comments for the Spend Variance section:", key="comment_variance", on_change=lambda: st.session_state.update(reports_ready=False))
-        st.markdown("---")
-
-        st.subheader("🎯 Budget Impact and Reallocation Insights")
-        overspend_projects = filtered_df[filtered_df['CAPITAL_OVERSPEND'] > 0].sort_values('CAPITAL_OVERSPEND', ascending=False)
-        underspend_projects = filtered_df[filtered_df['CAPITAL_UNDERSPEND'] > 0].sort_values('CAPITAL_UNDERSPEND', ascending=False)
-        currency_formatter = { 'BUSINESS_ALLOCATION': "${:,.2f}", f'TOTAL_{current_year}_FORECASTS': "${:,.2f}", 'CAPITAL_OVERSPEND': "${:,.2f}", 'CAPITAL_UNDERSPEND': "${:,.2f}" }
-        
-        i1, i2 = st.columns(2)
-        with i1:
-            st.write("#### Projects with Largest Forecasted Overspend")
-            st.markdown("These projects are forecasted to exceed their `BUSINESS_ALLOCATION`.")
-            if not overspend_projects.empty: st.dataframe(overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format(currency_formatter), use_container_width=True, hide_index=True)
-            else: st.info("No projects are currently forecasting an overspend.")
-        with i2:
-            st.write("#### Projects with Largest Potential Underspend")
-            st.markdown("These projects have capital that could be reallocated.")
-            if not underspend_projects.empty: st.dataframe(underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format(currency_formatter), use_container_width=True, hide_index=True)
-            else: st.info("No projects are currently forecasting an underspend.")
-        
-        if not overspend_projects.empty and not underspend_projects.empty: st.success(f"**Reallocation Suggestion:** There is a total potential underspend of **${capital_underspend:,.2f}** which could cover the total potential overspend of **${capital_overspend:,.2f}**.")
-        st.text_area("Add comments for the Budget Impact section:", key="comment_impact", on_change=lambda: st.session_state.update(reports_ready=False))
-        st.markdown("---")
-        
-        st.subheader("Individual Project Financials")
-        project_names = ['Select a Project'] + sorted(filtered_df['PROJECT_NAME'].dropna().unique())
-        selected_project_name = st.selectbox("Select a project for a detailed monthly view:", project_names, on_change=lambda: st.session_state.update(reports_ready=False))
-
-        project_details = None
-        fig_project_monthly = None
-        monthly_breakdown_df = pd.DataFrame()
-        if selected_project_name != 'Select a Project':
-            project_details = filtered_df[filtered_df['PROJECT_NAME'] == selected_project_name].iloc[0]
-            st.write(f"### Details for: {project_details['PROJECT_NAME']}")
-            d1, d2, d3 = st.columns(3)
-            d1.metric("Business Allocation", f"${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}")
-            d2.metric("Current EAC", f"${project_details.get('CURRENT_EAC', 0):,.2f}")
-            d3.metric("All Prior Years Actuals", f"${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}")
-            
-            st.write(f"#### {current_year_str} Monthly Breakdown:")
-            monthly_breakdown_data = {'Month': [f"{current_year_str}_{i:02d}" for i in range(1, 13)]}
-            monthly_types = {'_A': 'Actuals', '_F': 'Forecasts', '_CP': 'Capital Plan'}
-            for suffix, name in monthly_types.items():
-                monthly_values = [project_details.get(f'{current_year_str}_{i:02d}{suffix}', 0) for i in range(1, 13)]
-                monthly_breakdown_data[name] = monthly_values
-            
-            monthly_breakdown_df = pd.DataFrame(monthly_breakdown_data)
-            st.dataframe(monthly_breakdown_df.style.format({'Actuals': "${:,.2f}", 'Forecasts': "${:,.2f}", 'Capital Plan': "${:,.2f}"}), use_container_width=True, hide_index=True)
-
-            monthly_project_melted = monthly_breakdown_df.melt(id_vars=['Month'], var_name='Type', value_name='Amount')
-            fig_project_monthly = px.bar(monthly_project_melted, x='Month', y='Amount', color='Type', barmode='group', title=f'Monthly Financials for {selected_project_name}')
-            st.plotly_chart(fig_project_monthly, use_container_width=True)
-        else:
-            st.info("Select a project from the dropdown to see its detailed monthly financials.")
-        st.markdown("---")
-
-        st.subheader("🏆 Project Performance")
-        project_performance_ranked = filtered_df.sort_values('AVERAGE_MONTHLY_SPREAD_SCORE')
-        if 'AVERAGE_MONTHLY_SPREAD_SCORE' in filtered_df.columns:
-            st.info("**How is project performance ranked?** By the **'Average Monthly Spread Score'**: the average monthly difference between actual vs. forecasted spend. A **lower score is better**.")
-            st.write("#### Top 5 Best Behaving Projects (Lowest Avg. Monthly Spread)"); st.dataframe(project_performance_ranked.head(5)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}), use_container_width=True, hide_index=True)
-            st.write("#### Bottom 5 Worst Behaving Projects (Highest Avg. Monthly Spread)"); st.dataframe(project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}), use_container_width=True, hide_index=True)
-            st.text_area("Add comments for the Bottom 5 Projects:", key="comment_bottom5", on_change=lambda: st.session_state.update(reports_ready=False))
-        st.markdown("---")
-
-        st.subheader("Generate Professional Reports")
-        st.markdown("Add your comments in the sections above, then click the button below to prepare your downloadable reports.")
-
-        if st.button("Prepare Reports for Download"):
-            st.session_state.reports_ready = True
-
-        if st.session_state.get('reports_ready', False):
-            metrics_data_display = { "Number of Projects": total_projects, "Sum Actual Spend (YTD)": f"${sum_actual_spend_ytd:,.2f}", "Sum Of Forecasted Numbers": f"${sum_of_forecasted_numbers_sum:,.2f}", "Avg Run Rate / Month": f"${run_rate_per_month:,.2f}", "Total Potential Underspend": f"${capital_underspend:,.2f}", "Total Potential Overspend": f"${capital_overspend:,.2f}", "Net Reallocation": f"${net_reallocation_amount:,.2f}" }
-            
-            # --- BUG FIX STARTS HERE ---
-            # Prepare a separate, clean dictionary for the Excel export
-            metrics_data_excel = {
-                k: (v.replace('$', '').replace(',', '') if isinstance(v, str) else v)
-                for k, v in metrics_data_display.items()
-            }
-            # --- BUG FIX ENDS HERE ---
-
-            figures_data = { 'monthly_trends': fig_monthly_trends, 'total_spend': fig_total_spend_variance, 'avg_spend': fig_avg_spend_variance }
-            
-            tables_data_styled = {
-                'project_details': filtered_df[project_table_cols_present].style.format(financial_format_map).to_html(index=False),
-                'overspend': overspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_OVERSPEND']].head().style.format(currency_formatter).to_html(index=False),
-                'underspend': underspend_projects[['PROJECT_NAME', 'BUSINESS_ALLOCATION', f'TOTAL_{current_year}_FORECASTS', 'CAPITAL_UNDERSPEND']].head().style.format(currency_formatter).to_html(index=False),
-                'top_5': project_performance_ranked.head(5)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False),
-                'bottom_5': project_performance_ranked.tail(5).sort_values('AVERAGE_MONTHLY_SPREAD_SCORE', ascending=False)[['PROJECT_NAME', 'AVERAGE_MONTHLY_SPREAD_SCORE']].style.format({'AVERAGE_MONTHLY_SPREAD_SCORE': "${:,.2f}"}).to_html(index=False)
-            }
-
-            excel_tables = { 'Project_Details': filtered_df[project_table_cols_present], 'Over-Spend_Projects': overspend_projects, 'Under-Spend_Projects': underspend_projects, 'Performance_Rankings': project_performance_ranked }
-            comments_data = { 'variance': st.session_state.comment_variance, 'impact': st.session_state.comment_impact, 'bottom5': st.session_state.comment_bottom5 }
-            
-            project_details_report_html = None
-            if project_details is not None and fig_project_monthly is not None:
-                project_metrics_html = f"""<div class="metric-container"><div class="metric-box"><div class="metric-label">Business Allocation</div><div class="metric-value">${project_details.get('BUSINESS_ALLOCATION', 0):,.2f}</div></div><div class="metric-box"><div class="metric-label">Current EAC</div><div class="metric-value">${project_details.get('CURRENT_EAC', 0):,.2f}</div></div><div class="metric-box"><div class="metric-label">All Prior Years Actuals</div><div class="metric-value">${project_details.get('ALL_PRIOR_YEARS_ACTUALS', 0):,.2f}</div></div></div>"""
-                project_table_html = monthly_breakdown_df.style.format({'Actuals': "${:,.2f}", 'Forecasts': "${:,.2f}", 'Capital Plan': "${:,.2f}"}).to_html(index=False)
-                project_chart_html = fig_project_monthly.to_html(full_html=False, include_plotlyjs='cdn')
-                project_details_report_html = f"""<h2 class="section-title">Detailed Financials for {selected_project_name}</h2>{project_metrics_html}<h3>{current_year_str} Monthly Breakdown</h3>{project_table_html}<div class="chart-container">{project_chart_html}</div>"""
-                excel_tables[f'Detail_{selected_project_name.replace(" ", "_")[:20]}'] = monthly_breakdown_df
-
-            html_report = generate_html_report(metrics_data_display, figures_data, tables_data_styled, comments_data, project_details_report_html)
-            excel_report = generate_excel_report(metrics_data_excel, excel_tables, comments_data)
-
-            st.info("Your reports are ready to download below.")
-            dl1, dl2 = st.columns(2)
-            dl1.download_button("⬇️ Download Report as HTML", html_report, "capital_project_report.html", "text/html")
-            dl2.download_button("⬇️ Download Report as Excel", excel_report, "capital_project_report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-else:
-    st.info("Upload your Capital Project CSV or Excel file to get started!")
+col3, col4 = st.columns(2)
+with col3:
+    term_years = st.number_input("Term (Years)", min_value=1, max_value=10, value=3)
+with col4:
+    custom_discount = st.number_input("Custom Disc. %", min_value=0.0, max_value=40.0, value=0.0, step=0.5)
 
 st.markdown("---")
-with st.expander("View Application Source Code"):
-    st.code(inspect.getsource(inspect.currentframe()), language='python')
+st.markdown("### 🧩 Service Modules")
+
+# Required services are always on
+required = [k for k, v in SERVICE_MODULES.items() if v["required"]]
+optional = [k for k, v in SERVICE_MODULES.items() if not v["required"]]
+
+selected_optional = st.multiselect(
+    "Optional Services",
+    options=optional,
+    default=["Transfer Agency", "Client Reporting"],
+    help="Required services (NAV, Compliance) are always included.",
+)
+selected_services = required + selected_optional
+
+# Show selected services with rates
+for svc in selected_services:
+    info = SERVICE_MODULES[svc]
+    tag = " 🔒" if info["required"] else ""
+    st.caption(f"• {svc}{tag} — {info['bps']:.1f} bps base — _{info['desc']}_")
+
+st.markdown("---")
+st.markdown("### 🤝 Negotiation Scenario")
+
+scenario = st.radio(
+    "Select scenario",
+    options=list(NEGOTIATION_SCENARIOS.keys()),
+    format_func=lambda x: f"{x} ({'-' + fmt_pct(NEGOTIATION_SCENARIOS[x]['discount']) if NEGOTIATION_SCENARIOS[x]['discount'] > 0 else 'Rack Rate'})",
+    help="Each scenario models a different competitive posture for fee discussions.",
+)
+```
+
+# ──────────────────────────────────────────────────────────────────────
+
+# COMPUTE PRICING
+
+# ──────────────────────────────────────────────────────────────────────
+
+pricing = calculate_pricing(
+fund_type=fund_type,
+aum_mn=aum_mn,
+selected_services=selected_services,
+scenario=scenario,
+custom_discount_pct=custom_discount,
+share_classes=share_classes,
+nav_frequency=nav_frequency,
+term_years=term_years,
+)
+
+# ──────────────────────────────────────────────────────────────────────
+
+# TABS
+
+# ──────────────────────────────────────────────────────────────────────
+
+tab1, tab2, tab3, tab4 = st.tabs([
+“💰 Pricing Summary”,
+“📈 Sensitivity Analysis”,
+“⚔️ Negotiation Scenarios”,
+“📋 Portfolio View”,
+])
+
+# ══════════════════════════════════════════════════════════════════════
+
+# TAB 1: PRICING SUMMARY
+
+# ══════════════════════════════════════════════════════════════════════
+
+with tab1:
+narrative(
+“<strong>How to read this:</strong> The metrics below show the output of “
+“the pricing engine for your configured fund. The effective rate is the “
+“all-in fee after all discount layers are applied. Margin is estimated “
+“using a simplified FTE cost model ($85K fully-loaded per head, Ireland-based). “
+“The discount waterfall decomposes each layer so you can see where fee “
+“compression is coming from.”
+)
+
+```
+# KPI row
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.metric("Annual Revenue", fmt_usd(pricing["annual_revenue_mn"]),
+               delta="Min fee applied" if pricing["min_fee_applied"] else None,
+               delta_color="off")
+with c2:
+    st.metric("Effective Rate", fmt_bps(pricing["effective_bps"]),
+               delta=f"↓ from {fmt_bps(pricing['gross_bps'])} gross")
+with c3:
+    margin_color = "normal" if pricing["margin"] > 0.3 else "off"
+    st.metric("Est. Margin", fmt_pct(pricing["margin"]),
+               delta=f"{pricing['headcount']} FTE estimated", delta_color="off")
+with c4:
+    st.metric("Contract Value", fmt_usd(pricing["contract_value_mn"]),
+               delta=f"{pricing['term_years']}-year term", delta_color="off")
+
+# ── Discount Waterfall ────────────────────────────────────────────
+section_header("📉", "Discount Waterfall")
+
+waterfall_items = [
+    ("Gross Rate", pricing["gross_bps"], THEME["muted"]),
+    (f"Volume Discount ({fmt_pct(pricing['volume_discount'])})",
+     -pricing["gross_bps"] * pricing["volume_discount"], THEME["cyan"]),
+    (f"Negotiation ({fmt_pct(pricing['nego_discount'])})",
+     -pricing["gross_bps"] * (1 - pricing["volume_discount"]) * pricing["nego_discount"],
+     THEME["amber"]),
+]
+if custom_discount > 0:
+    waterfall_items.append((
+        f"Custom ({custom_discount}%)",
+        -pricing["gross_bps"] * (custom_discount / 100) * 0.5,
+        THEME["purple"],
+    ))
+if pricing["term_discount"] > 0:
+    waterfall_items.append((
+        f"Term Discount ({fmt_pct(pricing['term_discount'])})",
+        -pricing["gross_bps"] * pricing["term_discount"] * 0.5,
+        THEME["green"],
+    ))
+waterfall_items.append(("Effective Rate", pricing["effective_bps"], THEME["green"]))
+
+fig_wf = go.Figure(go.Waterfall(
+    x=[w[0] for w in waterfall_items],
+    y=[w[1] for w in waterfall_items],
+    measure=["absolute"] + ["relative"] * (len(waterfall_items) - 2) + ["total"],
+    textposition="outside",
+    text=[f"{abs(w[1]):.2f}" for w in waterfall_items],
+    connector=dict(line=dict(color=THEME["border"])),
+    increasing=dict(marker=dict(color=THEME["green"])),
+    decreasing=dict(marker=dict(color=THEME["red"])),
+    totals=dict(marker=dict(color=THEME["green"])),
+))
+fig_wf.update_layout(title="Fee Rate Waterfall (bps)", showlegend=False)
+plotly_dark_layout(fig_wf, height=380)
+st.plotly_chart(fig_wf, use_container_width=True)
+
+# ── Service Breakdown ─────────────────────────────────────────────
+col_left, col_right = st.columns(2)
+
+with col_left:
+    section_header("🧩", "Fee Composition by Service")
+    svc_df = pd.DataFrame(pricing["service_breakdown"])
+    fig_pie = go.Figure(go.Pie(
+        labels=svc_df["service"],
+        values=svc_df["adjusted_bps"],
+        hole=0.45,
+        marker=dict(colors=THEME["chart_palette"][:len(svc_df)]),
+        textinfo="label+percent",
+        textfont=dict(size=11),
+    ))
+    fig_pie.update_layout(title="Adjusted bps by Service")
+    plotly_dark_layout(fig_pie, height=340)
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+with col_right:
+    section_header("💰", "Revenue vs Cost")
+    fig_econ = go.Figure()
+    fig_econ.add_trace(go.Bar(
+        x=["Revenue", "Cost"],
+        y=[pricing["annual_revenue_mn"], pricing["annual_cost_mn"]],
+        marker_color=[THEME["green"], THEME["red"]],
+        text=[fmt_usd(pricing["annual_revenue_mn"]), fmt_usd(pricing["annual_cost_mn"])],
+        textposition="outside",
+    ))
+    fig_econ.update_layout(title="Annual Economics ($M)", yaxis_title="$M")
+    plotly_dark_layout(fig_econ, height=340)
+    st.plotly_chart(fig_econ, use_container_width=True)
+
+# ── Service detail table ──────────────────────────────────────────
+with st.expander("📊 Detailed Service Breakdown"):
+    detail_df = pd.DataFrame(pricing["service_breakdown"])
+    detail_df.columns = ["Service", "Base Rate (bps)", "Adjusted Rate (bps)"]
+    detail_df["Adjusted Rate (bps)"] = detail_df["Adjusted Rate (bps)"].round(3)
+    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+```
+
+# ══════════════════════════════════════════════════════════════════════
+
+# TAB 2: SENSITIVITY ANALYSIS
+
+# ══════════════════════════════════════════════════════════════════════
+
+with tab2:
+narrative(
+“<strong>AUM Sensitivity Analysis:</strong> These charts show how revenue, “
+“effective rate, and margin behave as AUM scales — holding all other parameters “
+“constant. The step-function in the effective rate reflects volume tier thresholds “
+“at $500M, $2B, $5B, and $15B. The margin curve reveals FA operating leverage: “
+“fixed FTE costs amortise over larger AUM, driving margin expansion at scale.”
+)
+
+```
+aum_points = [50, 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 7500, 10000, 15000, 20000, 25000]
+sensitivity_data = []
+for a in aum_points:
+    p = calculate_pricing(fund_type, a, selected_services, scenario,
+                          custom_discount, share_classes, nav_frequency, term_years)
+    sensitivity_data.append({
+        "AUM ($M)": a,
+        "Annual Revenue ($M)": round(p["annual_revenue_mn"], 4),
+        "Effective Rate (bps)": round(p["effective_bps"], 3),
+        "Margin": round(p["margin"], 4),
+        "Headcount": p["headcount"],
+    })
+sens_df = pd.DataFrame(sensitivity_data)
+
+# Revenue & Rate chart
+section_header("📈", "Revenue & Effective Rate by AUM")
+fig_sens = make_subplots(specs=[[{"secondary_y": True}]])
+fig_sens.add_trace(
+    go.Scatter(x=sens_df["AUM ($M)"], y=sens_df["Annual Revenue ($M)"],
+               name="Annual Revenue ($M)", fill="tozeroy",
+               fillcolor=f"rgba(16,185,129,0.15)",
+               line=dict(color=THEME["green"], width=2.5)),
+    secondary_y=False,
+)
+fig_sens.add_trace(
+    go.Scatter(x=sens_df["AUM ($M)"], y=sens_df["Effective Rate (bps)"],
+               name="Effective Rate (bps)", line=dict(color=THEME["accent"], width=2.5, dash="dot"),
+               mode="lines+markers", marker=dict(size=5)),
+    secondary_y=True,
+)
+fig_sens.update_yaxes(title_text="Revenue ($M)", secondary_y=False)
+fig_sens.update_yaxes(title_text="Effective Rate (bps)", secondary_y=True)
+fig_sens.update_xaxes(title_text="AUM ($M)")
+fig_sens.update_layout(title="Revenue Growth & Rate Compression")
+plotly_dark_layout(fig_sens, height=400)
+st.plotly_chart(fig_sens, use_container_width=True)
+
+# Margin curve
+section_header("📊", "Margin Curve")
+narrative(
+    "<strong>Margin trajectory:</strong> At low AUM, the minimum fee floor ($50K) "
+    "protects revenue but margins are thin. Beyond $1B, margins typically stabilise "
+    "at 35–50%. At very high AUM, aggressive volume discounts can compress margins "
+    "— a dynamic to monitor in large mandate negotiations."
+)
+fig_margin = go.Figure()
+fig_margin.add_trace(go.Scatter(
+    x=sens_df["AUM ($M)"], y=sens_df["Margin"],
+    fill="tozeroy", fillcolor="rgba(16,185,129,0.12)",
+    line=dict(color=THEME["green"], width=2.5),
+    mode="lines+markers", marker=dict(size=5),
+    name="Estimated Margin",
+))
+# 30% and 15% reference lines
+fig_margin.add_hline(y=0.30, line_dash="dash", line_color=THEME["amber"],
+                     annotation_text="Target (30%)", annotation_font_color=THEME["amber"])
+fig_margin.add_hline(y=0.15, line_dash="dash", line_color=THEME["red"],
+                     annotation_text="Floor (15%)", annotation_font_color=THEME["red"])
+fig_margin.update_layout(title="Margin by AUM Scale",
+                         xaxis_title="AUM ($M)", yaxis_title="Margin",
+                         yaxis_tickformat=".0%", yaxis_range=[0, 0.7])
+plotly_dark_layout(fig_margin, height=380)
+st.plotly_chart(fig_margin, use_container_width=True)
+
+# Volume tier table
+section_header("🏷️", "Volume Discount Schedule")
+tier_data = []
+for lo, hi, disc in VOLUME_TIERS:
+    hi_label = f"${hi/1000:.0f}B" if hi >= 1000 and hi < 1e9 else (f"${hi:.0f}M" if hi < 1000 else "∞")
+    lo_label = f"${lo/1000:.0f}B" if lo >= 1000 else f"${lo:.0f}M"
+    current = "◀ CURRENT" if lo <= aum_mn < hi else ""
+    tier_data.append({
+        "AUM Range": f"{lo_label} – {hi_label}",
+        "Volume Discount": f"{disc*100:.0f}%" if disc > 0 else "—",
+        "Status": current,
+    })
+st.dataframe(pd.DataFrame(tier_data), use_container_width=True, hide_index=True)
+
+with st.expander("📋 Full Sensitivity Data Table"):
+    st.dataframe(sens_df, use_container_width=True, hide_index=True)
+```
+
+# ══════════════════════════════════════════════════════════════════════
+
+# TAB 3: NEGOTIATION SCENARIOS
+
+# ══════════════════════════════════════════════════════════════════════
+
+with tab3:
+narrative(
+“<strong>Negotiation Playbook:</strong> Each scenario models a different “
+“competitive posture. <em>Standard</em> is your rack rate. <em>Competitive Bid</em> “
+“(–12%) is typical when 2–3 administrators are shortlisted. <em>Strategic Win</em> “
+“(–20%) is reserved for anchor mandates that bring platform credibility. “
+“<em>Retention</em> (–25%) is the defensive position for at-risk relationships — “
+“use sparingly and with commercial approval.”
+)
+
+```
+# Compute all scenarios
+scenario_results = {}
+for sc_name, sc_info in NEGOTIATION_SCENARIOS.items():
+    p = calculate_pricing(fund_type, aum_mn, selected_services, sc_name,
+                          custom_discount, share_classes, nav_frequency, term_years)
+    scenario_results[sc_name] = p
+
+# Scenario cards
+cols = st.columns(4)
+for i, (sc_name, sc_info) in enumerate(NEGOTIATION_SCENARIOS.items()):
+    p = scenario_results[sc_name]
+    with cols[i]:
+        border_color = sc_info["color"]
+        st.markdown(f"""
+        <div style="background:#111827; border:1px solid #1e293b; border-top:3px solid {border_color};
+                    border-radius:10px; padding:18px; text-align:center;">
+            <div style="font-size:0.85rem; font-weight:700; color:{border_color}; margin-bottom:10px;">
+                {sc_name}
+            </div>
+            <div style="font-size:1.4rem; font-weight:700; color:#e2e8f0;
+                        font-family:'JetBrains Mono',monospace; margin-bottom:4px;">
+                {fmt_usd(p['annual_revenue_mn'])}
+            </div>
+            <div style="font-size:0.78rem; color:#94a3b8; margin-bottom:6px;">
+                {fmt_bps(p['effective_bps'])} · {fmt_pct(p['margin'])} margin
+            </div>
+            <div style="font-size:0.72rem; color:#64748b;">
+                Contract: {fmt_usd(p['contract_value_mn'])}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("")
+
+# Comparison bar chart
+section_header("📊", "Revenue by Scenario")
+fig_sc = go.Figure()
+sc_names = list(scenario_results.keys())
+sc_revenues = [scenario_results[s]["annual_revenue_mn"] for s in sc_names]
+sc_colors = [NEGOTIATION_SCENARIOS[s]["color"] for s in sc_names]
+fig_sc.add_trace(go.Bar(
+    x=sc_names, y=sc_revenues,
+    marker_color=sc_colors,
+    text=[fmt_usd(r) for r in sc_revenues],
+    textposition="outside",
+))
+fig_sc.update_layout(title="Annual Revenue Comparison", yaxis_title="Revenue ($M)")
+plotly_dark_layout(fig_sc, height=380)
+st.plotly_chart(fig_sc, use_container_width=True)
+
+# Walk-away analysis
+section_header("🎯", "Walk-Away Analysis")
+narrative(
+    "<strong>Key negotiation thresholds:</strong> These figures give you the "
+    "anchor points for any fee discussion. The per-bps impact quantifies the "
+    "annual revenue cost of every basis point conceded. The floor price is the "
+    "rate at which margin drops to 15% — below this, escalate before agreeing. "
+    "The breakeven rate is your absolute minimum."
+)
+
+bps_impact = (aum_mn * 1) / 10_000  # revenue impact per 1 bps ($M)
+floor_bps = (pricing["annual_cost_mn"] / aum_mn * 10_000 / 0.85) if aum_mn > 0 else 0
+breakeven_bps = (pricing["annual_cost_mn"] / aum_mn * 10_000) if aum_mn > 0 else 0
+retention_rev = scenario_results.get("Retention", {}).get("annual_revenue_mn", 0)
+standard_rev = scenario_results.get("Standard", {}).get("annual_revenue_mn", 0)
+revenue_at_risk = standard_rev - retention_rev
+
+w1, w2, w3, w4 = st.columns(4)
+with w1:
+    st.metric("Per 1 bps Concession", fmt_usd(bps_impact), delta="Annual impact", delta_color="off")
+with w2:
+    st.metric("Floor Price (15% margin)", fmt_bps(floor_bps), delta="Minimum viable rate", delta_color="off")
+with w3:
+    st.metric("Breakeven Rate", fmt_bps(breakeven_bps), delta="$0 margin", delta_color="off")
+with w4:
+    st.metric("Revenue at Risk", fmt_usd(revenue_at_risk), delta="Standard vs Retention", delta_color="off")
+
+# Scenario comparison table
+with st.expander("📋 Full Scenario Comparison Table"):
+    comp_data = []
+    for sc_name in sc_names:
+        p = scenario_results[sc_name]
+        comp_data.append({
+            "Scenario": sc_name,
+            "Discount": fmt_pct(NEGOTIATION_SCENARIOS[sc_name]["discount"]),
+            "Effective Rate": fmt_bps(p["effective_bps"]),
+            "Annual Revenue": fmt_usd(p["annual_revenue_mn"]),
+            "Margin": fmt_pct(p["margin"]),
+            "Contract Value": fmt_usd(p["contract_value_mn"]),
+            "Headcount": p["headcount"],
+        })
+    st.dataframe(pd.DataFrame(comp_data), use_container_width=True, hide_index=True)
+```
+
+# ══════════════════════════════════════════════════════════════════════
+
+# TAB 4: PORTFOLIO VIEW
+
+# ══════════════════════════════════════════════════════════════════════
+
+with tab4:
+narrative(
+“<strong>Portfolio View:</strong> This shows blended economics across a “
+“multi-fund client relationship. Individual fund margins vary, but the “
+“relationship-level blended rate and composite margin determine commercial “
+“viability. Use this to identify cross-sell opportunities, margin dilution “
+“risks, and to prepare for relationship-level fee reviews.”
+)
+
+```
+# Default portfolio (editable via session state)
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = [
+        {"name": "Global Equity UCITS", "type": "UCITS Equity", "aum": 800,
+         "services": ["NAV Calculation", "Regulatory Compliance", "Transfer Agency", "Client Reporting"],
+         "scenario": "Standard", "classes": 5, "freq": "Daily", "term": 5},
+        {"name": "Euro Corp Bond", "type": "UCITS Fixed Income", "aum": 1200,
+         "services": ["NAV Calculation", "Regulatory Compliance", "Client Reporting", "Tax Services"],
+         "scenario": "Standard", "classes": 4, "freq": "Daily", "term": 5},
+        {"name": "PE Growth Fund III", "type": "AIF Private Equity", "aum": 350,
+         "services": ["NAV Calculation", "Regulatory Compliance", "Client Reporting", "Tax Services", "Risk Analytics"],
+         "scenario": "Competitive Bid", "classes": 2, "freq": "Monthly", "term": 7},
+    ]
+
+portfolio = st.session_state.portfolio
+
+# Add new fund
+section_header("➕", "Add Fund to Portfolio")
+with st.expander("Add a new fund"):
+    ac1, ac2, ac3 = st.columns(3)
+    with ac1:
+        new_name = st.text_input("Fund Name", value="New Fund")
+        new_type = st.selectbox("Type", list(FUND_TYPES.keys()), key="new_type")
+    with ac2:
+        new_aum = st.number_input("AUM ($M)", min_value=10, max_value=30000, value=500, key="new_aum")
+        new_classes = st.number_input("Share Classes", min_value=1, max_value=30, value=3, key="new_classes")
+    with ac3:
+        new_freq = st.selectbox("NAV Freq", ["Daily", "Weekly", "Monthly"], key="new_freq")
+        new_term = st.number_input("Term (yrs)", min_value=1, max_value=10, value=3, key="new_term")
+
+    new_scenario = st.selectbox("Scenario", list(NEGOTIATION_SCENARIOS.keys()), key="new_scenario")
+    required_svcs = [k for k, v in SERVICE_MODULES.items() if v["required"]]
+    optional_svcs = [k for k, v in SERVICE_MODULES.items() if not v["required"]]
+    new_optional = st.multiselect("Optional Services", optional_svcs, default=["Transfer Agency"], key="new_svcs")
+    new_services = required_svcs + new_optional
+
+    if st.button("➕ Add to Portfolio", type="primary"):
+        st.session_state.portfolio.append({
+            "name": new_name, "type": new_type, "aum": new_aum,
+            "services": new_services, "scenario": new_scenario,
+            "classes": new_classes, "freq": new_freq, "term": new_term,
+        })
+        st.rerun()
+
+# Compute portfolio pricing
+port_results = []
+for fund in portfolio:
+    p = calculate_pricing(
+        fund["type"], fund["aum"], fund["services"], fund["scenario"],
+        0.0, fund["classes"], fund["freq"], fund["term"],
+    )
+    port_results.append({"fund": fund, "pricing": p})
+
+total_aum = sum(f["fund"]["aum"] for f in port_results)
+total_rev = sum(f["pricing"]["annual_revenue_mn"] for f in port_results)
+total_cost = sum(f["pricing"]["annual_cost_mn"] for f in port_results)
+total_contract = sum(f["pricing"]["contract_value_mn"] for f in port_results)
+blended_bps = (total_rev / total_aum * 10_000) if total_aum > 0 else 0
+blended_margin = (total_rev - total_cost) / total_rev if total_rev > 0 else 0
+
+# Portfolio KPIs
+pk1, pk2, pk3, pk4 = st.columns(4)
+with pk1:
+    st.metric("Total AUM", fmt_usd(total_aum))
+with pk2:
+    st.metric("Total Revenue", fmt_usd(total_rev), delta=f"Blended {fmt_bps(blended_bps)}", delta_color="off")
+with pk3:
+    st.metric("Blended Margin", fmt_pct(blended_margin))
+with pk4:
+    st.metric("Total Contract Value", fmt_usd(total_contract))
+
+# Fund detail table
+section_header("📋", "Fund-Level Detail")
+table_data = []
+for pr in port_results:
+    f, p = pr["fund"], pr["pricing"]
+    table_data.append({
+        "Fund": f["name"],
+        "Type": f["type"],
+        "AUM": fmt_usd(f["aum"]),
+        "Eff. Rate": fmt_bps(p["effective_bps"]),
+        "Revenue": fmt_usd(p["annual_revenue_mn"]),
+        "Margin": fmt_pct(p["margin"]),
+        "Term": f"{f['term']}Y",
+        "Scenario": f["scenario"],
+    })
+st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+
+# Revenue composition chart
+section_header("📊", "Revenue & Cost Composition")
+fig_port = go.Figure()
+fund_names = [pr["fund"]["name"] for pr in port_results]
+fig_port.add_trace(go.Bar(
+    x=fund_names,
+    y=[pr["pricing"]["annual_revenue_mn"] for pr in port_results],
+    name="Revenue", marker_color=THEME["green"],
+))
+fig_port.add_trace(go.Bar(
+    x=fund_names,
+    y=[pr["pricing"]["annual_cost_mn"] for pr in port_results],
+    name="Cost", marker_color=THEME["red"], opacity=0.6,
+))
+fig_port.update_layout(title="Revenue vs Cost by Fund", barmode="group",
+                       yaxis_title="$M")
+plotly_dark_layout(fig_port, height=380)
+st.plotly_chart(fig_port, use_container_width=True)
+
+# AUM allocation pie
+col_p1, col_p2 = st.columns(2)
+with col_p1:
+    section_header("🥧", "AUM Allocation")
+    fig_aum_pie = go.Figure(go.Pie(
+        labels=fund_names,
+        values=[pr["fund"]["aum"] for pr in port_results],
+        hole=0.4, marker=dict(colors=THEME["chart_palette"][:len(fund_names)]),
+    ))
+    fig_aum_pie.update_layout(title="AUM Distribution")
+    plotly_dark_layout(fig_aum_pie, height=320)
+    st.plotly_chart(fig_aum_pie, use_container_width=True)
+
+with col_p2:
+    section_header("🥧", "Revenue Contribution")
+    fig_rev_pie = go.Figure(go.Pie(
+        labels=fund_names,
+        values=[pr["pricing"]["annual_revenue_mn"] for pr in port_results],
+        hole=0.4, marker=dict(colors=THEME["chart_palette"][:len(fund_names)]),
+    ))
+    fig_rev_pie.update_layout(title="Revenue Distribution")
+    plotly_dark_layout(fig_rev_pie, height=320)
+    st.plotly_chart(fig_rev_pie, use_container_width=True)
+
+# Remove funds
+if len(portfolio) > 0:
+    with st.expander("🗑️ Remove a fund from portfolio"):
+        remove_idx = st.selectbox(
+            "Select fund to remove",
+            range(len(portfolio)),
+            format_func=lambda i: portfolio[i]["name"],
+        )
+        if st.button("Remove Fund", type="secondary"):
+            st.session_state.portfolio.pop(remove_idx)
+            st.rerun()
+```
+
+# ──────────────────────────────────────────────────────────────────────
+
+# FOOTER
+
+# ──────────────────────────────────────────────────────────────────────
+
+st.markdown(”—”)
+st.markdown(”””
+
+<div style="display:flex; justify-content:space-between; font-size:0.72rem; color:#64748b; padding:8px 0;">
+    <span>FA Pricing Model · For internal commercial use · Fund Administration Product Team</span>
+    <span>Model assumptions are illustrative. Actual pricing requires commercial approval.</span>
+</div>
+""", unsafe_allow_html=True)
